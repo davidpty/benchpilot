@@ -26,13 +26,9 @@ copper clad board, then etch in ferric chloride or ammonium persulfate.
 Drill the holes, solder the components, and the board is ready to plug into
 the CYD and the SeaTalk bus.
 
-The housing shown in the photo is made from 3mm PVC foam board (Foamex /
-Sintra). Cut the front and back panels slightly larger than the CYD, then
-cut out openings for the screen, the four buttons, and the USB port. Glue
-the two panels together along three edges with regular PVC glue (leave the
-top open so the CYD can slide in), or build a simple five-sided box with
-the CYD seated behind the front cutout. A craft knife works well for the
-foam board, it cuts cleanly and sands smooth.
+The housing shown in the photo is made from 5mm PVC foam board (Foamex /
+Sintra). A craft knife works well for the foam board, it cuts cleanly and
+sands smooth. The pieces are glued together with regular PVC glue.
 
 ## Getting started
 
