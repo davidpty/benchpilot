@@ -1076,6 +1076,7 @@ static void drawLogView() {
         const char *c1 = strchr(msg, ',');
         const char *c2 = strrchr(msg, ',');
         int y = 4 + line * 8;
+        tft.fillRect(0, y, 320, 8, TFT_BLACK);
         int x = 2;
         if (c1 && c2 && c2 > c1) {
             int n = c1 - msg;
@@ -1096,7 +1097,7 @@ static void drawLogView() {
             tft.setTextColor(TFT_LOG_TS, TFT_BLACK);
             tft.drawString(msg, x, y); x += tft.textWidth(msg);
         }
-        if (x < 318) tft.fillRect(x, y, 320 - x, 8, TFT_BLACK);
+        if (x < 320) tft.fillRect(x, y, 320 - x, 8, TFT_BLACK);
         idx = (idx + 1) % MSG_LOG_SIZE;
     }
     if (N < maxLines) {

@@ -4,7 +4,7 @@
 
 BenchPilot turns an ESP32 touchscreen display (ESP32-2432S028R CYD) into a SeaTalk 1 bus monitor and wireless control head. Connect it to a Raymarine SmartPilot S3 course computer on the bench or on the water. It generates heading data, decodes autopilot status, and lets you push buttons just like the real ST6002, all through a 320x240 color touchscreen or a WiFi web dashboard on your phone.
 
-![BenchPilot](docs/benchpilot.png)
+![BenchPilot in a PVC foam board housing](docs/benchpilot.png)
 
 ## What you can do
 
@@ -15,16 +15,28 @@ BenchPilot turns an ESP32 touchscreen display (ESP32-2432S028R CYD) into a SeaTa
 - **Log.** Every bus datagram is saved to the SD card for later analysis.
 - **Update.** Flash new firmware over WiFi (OTA) with no cables needed.
 
-## What you need
+You need an ESP32-2432S028R "CYD" display board, a BenchPilot interface
+PCB, and a 12V power supply (or the SeaTalk bus itself).
 
-- ESP32-2432S028R "CYD" display board
-- BenchPilot interface PCB (see pcb/ folder for Fritzing files)
-- 12V power supply (or the SeaTalk bus itself)
-- Any SeaTalk 1 device, such as SmartPilot S3, ST50/ST60 instruments, etc.
+The interface circuit can be built in two ways. The `pcb/` folder contains
+a Fritzing file (`BenchPilot_260715.fzz`), schematics, and a DIY etch PDF
+(`BenchPilot_260715_diy_etch.pdf`) sized for printing on A4 transfer paper
+with a regular printer. Print the PDF, iron the toner onto single-sided
+copper clad board, then etch in ferric chloride or ammonium persulfate.
+Drill the holes, solder the components, and the board is ready to plug into
+the CYD and the SeaTalk bus.
+
+The housing shown in the photo is made from 3mm PVC foam board (Foamex /
+Sintra). Cut the front and back panels slightly larger than the CYD, then
+cut out openings for the screen, the four buttons, and the USB port. Glue
+the two panels together along three edges with regular PVC glue (leave the
+top open so the CYD can slide in), or build a simple five-sided box with
+the CYD seated behind the front cutout. A craft knife works well for the
+foam board, it cuts cleanly and sands smooth.
 
 ## Getting started
 
-1. Build the interface circuit (pcb/ or docs/seatalk_circuit.txt)
+1. Build the interface circuit using the DIY etch PDF or the Fritzing files
 2. Copy `src/wifi_config.example.h` to `src/wifi_config.h`, add your WiFi
 3. Build and upload with PlatformIO:
    ```

@@ -9,16 +9,16 @@ Power is managed via U1, a DC-DC step-down converter that accepts the 12V marine
 This sub-circuit downshifts the 12V SeaTalk signal to a 3.3V logic level suitable for the ESP32 RX pin, while inverting the logic.
 
 ### Components Involved:
-*   Q1: BC557 (PNP Bipolar Junction Transistor)
-*   R1: 10 kΩ resistor (connected between the SEATALK DATA line and the base of Q1)
-*   R2: 2.2 kΩ resistor (pull-up between the 12V rail and the base of Q1)
-*   R6: 27 kΩ resistor (connected from the collector of Q1 to the RX node)
-*   R5: 6.8 kΩ resistor (pull-down between the RX node and GND)
+*   Q2: BC557 (PNP Bipolar Junction Transistor)
+*   R1: 10 kΩ resistor (connected between the SEATALK DATA line and the base of Q2)
+*   R2: 2.2 kΩ resistor (pull-up between the 12V rail and the base of Q2)
+*   R6: 10 kΩ resistor (connected from the collector of Q2 to the RX node)
+*   R5: 2.2 kΩ resistor (pull-down between the RX node and GND)
 
 ### Operation Logic:
-*   Idle State (SeaTalk is HIGH / 12V): The SEATALK DATA line rests at 12V. Because the emitter of Q1 is tied to 12V and its base is pulled to 12V via R2 and R1, the base-emitter voltage differential (Vbe) is 0V. Q1 remains turned OFF. With Q1 cut off, no current passes to the collector network. The ESP32 RX pin is pulled cleanly to ground via the R5 pull-down resistor. 
+*   Idle State (SeaTalk is HIGH / 12V): The SEATALK DATA line rests at 12V. Because the emitter of Q2 is tied to 12V and its base is pulled to 12V via R2 and R1, the base-emitter voltage differential (Vbe) is 0V. Q2 remains turned OFF. With Q2 cut off, no current passes to the collector network. The ESP32 RX pin is pulled cleanly to ground via the R5 pull-down resistor. 
     *   Result: SeaTalk 12V (Idle) = ESP32 RX 0V (LOW)
-*   Active State (SeaTalk is LOW / 0V): When a device pulls the SEATALK DATA line down to 0V, a voltage divider is formed between R2 and R1, pulling the base voltage of Q1 below 12V. This creates a forward bias (Vbe > 0.7V), turning Q1 ON. Current flows from the 12V emitter through the collector into the R6 and R5 resistor divider. This divider drops the voltage down to a safe level (~2.4V to 2.6V), registering as a logic high.
+*   Active State (SeaTalk is LOW / 0V): When a device pulls the SEATALK DATA line down to 0V, a voltage divider is formed between R2 and R1, pulling the base voltage of Q2 below 12V. This creates a forward bias (Vbe > 0.7V), turning Q2 ON. Current flows from the 12V emitter through the collector into the R6 and R5 resistor divider. This divider drops the voltage down to a safe level (~2.4V to 2.6V), registering as a logic high.
     *   Result: SeaTalk 0V (Data Bit) = ESP32 RX ~2.5V (HIGH)
 
 ---
@@ -27,15 +27,15 @@ This sub-circuit downshifts the 12V SeaTalk signal to a 3.3V logic level suitabl
 This sub-circuit allows the 3.3V ESP32 TX pin to drive the 12V SeaTalk bus by pulling it down to 0V during transmissions.
 
 ### Components Involved:
-*   Q2: BC547 (NPN Bipolar Junction Transistor)
+*   Q1: BC547 (NPN Bipolar Junction Transistor)
 *   R3: 10 kΩ resistor (pull-down between ESP32 TX and GND to prevent floating states)
-*   R4: 3.9 kΩ resistor (base current-limiting resistor between ESP32 TX and the base of Q2)
-*   Connection: The collector of Q2 is tied directly to the SEATALK DATA line; the emitter is tied to GND.
+*   R4: 3.9 kΩ resistor (base current-limiting resistor between ESP32 TX and the base of Q1)
+*   Connection: The collector of Q1 is tied directly to the SEATALK DATA line; the emitter is tied to GND.
 
 ### Operation Logic:
-*   Idle State (ESP32 TX is LOW / 0V): When the ESP32 TX pin is idle or outputting 0V, there is no base current to Q2. Q2 remains turned OFF. The collector acts as an open circuit, allowing the SeaTalk bus to remain at its native, externally pulled-up 12V idle state.
+*   Idle State (ESP32 TX is LOW / 0V): When the ESP32 TX pin is idle or outputting 0V, there is no base current to Q1. Q1 remains turned OFF. The collector acts as an open circuit, allowing the SeaTalk bus to remain at its native, externally pulled-up 12V idle state.
     *   Result: ESP32 TX 0V (Idle) = SeaTalk 12V (Idle)
-*   Active State (ESP32 TX is HIGH / 3.3V): When the ESP32 drives the TX line to 3.3V, current flows through R4 into the base of Q2, turning Q2 ON (Saturation). Q2 bridges the SEATALK DATA line directly to GND through its emitter. 
+*   Active State (ESP32 TX is HIGH / 3.3V): When the ESP32 drives the TX line to 3.3V, current flows through R4 into the base of Q1, turning Q1 ON (Saturation). Q1 bridges the SEATALK DATA line directly to GND through its emitter. 
     *   Result: ESP32 TX 3.3V (Data Bit) = SeaTalk 0V (Active LOW)
 
 ---
