@@ -2,7 +2,7 @@
 
 **Bench-test your Raymarine autopilot or replace the display on your boat.**
 
-BenchPilot turns an ESP32 touchscreen display (ESP32-2432S028R CYD) into a SeaTalk 1 bus monitor and wireless control head. Connect it to a Raymarine SmartPilot S3 course computer on the bench or on the water. It generates heading data, decodes autopilot status, and lets you push buttons just like the real ST6002, all through a 320x240 color touchscreen or a WiFi web dashboard on your phone.
+BenchPilot turns an ESP32 touchscreen display (ESP32-2432S028R CYD) into a SeaTalk 1 bus monitor and wireless control head. Connect it to a Raymarine SeaTalk autopilot course computer on the bench or on the water. It generates heading data, decodes autopilot status, and lets you push buttons just like the real ST6002, all through a 320x240 color touchscreen or a WiFi web dashboard on your phone.
 
 ![BenchPilot in a PVC foam board housing](docs/benchpilot.png)
 
@@ -21,7 +21,7 @@ PCB, and a 12V power supply (or the SeaTalk bus itself).
 The interface circuit can be built in two ways. The `pcb/` folder contains
 a Fritzing file (`BenchPilot_260715.fzz`), schematics, and a DIY etch PDF
 (`BenchPilot_260715_diy_etch.pdf`) sized for printing on A4 transfer paper
-with a regular printer. Print the PDF, iron the toner onto single-sided
+with a laser printer. Print the PDF, iron the toner onto single-sided
 copper clad board, then etch in ferric chloride or ammonium persulfate.
 Drill the holes, solder the components, and the board is ready to plug into
 the CYD and the SeaTalk bus.
