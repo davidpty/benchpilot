@@ -38,12 +38,14 @@ static auto &Seatalk = Serial2;
 // TX state
 static bool _txActive = false;
 static unsigned long _lastBusy = 0;
+static uint8_t _suppressEchoCmd = 0;
 
 // Heading TX state (periodic)
 static bool _hdgActive = false;
 static uint16_t _hdgDeg = 0;
 static unsigned long _hdgInterval = 250;
 static unsigned long _lastHdgTx = 0;
+static float _hdgFrac = 0;
 
 #define XPT2046_IRQ 36
 #define XPT2046_MOSI 32
@@ -337,9 +339,14 @@ static int gLogScroll = 0;
 static int gLogLastWriteIdx = -1;
 static int gLogFrozenNewest = -1;
 static int gLogViewDir = 0;
-static unsigned long gLogViewLastMove = 0;
 static int _flashIdx = -1;
 static unsigned long _flashEnd = 0;
+static int _driftFlashIdx = -1;
+
+// Persistent log display slot cache
+#define MAX_SLOTS 50
+static struct Slot { char key[64]; int count; char text[MSG_TEXT_LEN]; bool seen; } gSlots[MAX_SLOTS];
+static int gSlotCount = 0;
 
 // Force full redraw of all bands after any fillScreen (WiFi change, OTA).
 static void invalidateBands() {
@@ -365,18 +372,23 @@ static void invalidateBands() {
 #define TFT_BTN_ADJ     TFT_BTN_NAV
 #define TFT_BTN_NAV     0x008C  // dark blue
 #define TFT_BTN_FLUXSIM    0xD640  // yellow (active)
-#define TFT_BTN_FLUXSIM_DIM 0x4240  // dim olive (inactive)
+#define TFT_BTN_FLUXSIM_DIM 0x4A69  // dark grey (inactive)
 
 // --- Log view muted colors (grey tones → desaturated hues) ---
 #define TFT_LOG_TS   0x6C54  // muted steel blue
 #define TFT_LOG_HX   0x6C4D  // muted sage green
 #define TFT_LOG_SEP  0x7B4F  // muted mauve
 #define TFT_LOG_DESC 0xD508  // muted amber
+#define TFT_LOG_HI   0xFDC0  // bright amber (newest entry)
+#define TFT_HL_BG   0x4980  // warm amber bg for newest row
+#define TFT_LOG_SEP_HI 0xE5B8  // bright mauve (counter on hl)
+#define TFT_LOG_TS_HI  0x7EFC  // bright steel blue (ts on hl)
+#define TFT_LOG_HX_HI  0x87C0  // bright sage green (hex on hl)
 
 // --- Touchscreen buttons ---
 // Convention: when adding a button here, also add a <button> in handleRoot() HTML
 // with the same api= value and onclick handler. Layout must match between both.
-#define NUM_BUTTONS 9
+#define NUM_BUTTONS 13
 struct ButtonDef {
     const char *api;
     const char *label;
@@ -394,6 +406,10 @@ static ButtonDef btns[NUM_BUTTONS] = {
     {"wind",     "WIND",  0x23, TFT_BTN_NAV, 4,   198, 96,  24},
     {"fluxsim",     "FLUXSIM",  0xff, TFT_BTN_FLUXSIM,108, 198, 108, 24},
     {"track",    "TRACK", 0x28, TFT_BTN_NAV, 220, 198, 96,  24},
+    {"hdg_m10",  "-10",   0xFE, TFT_BTN_FLUXSIM, 4,  198, 48, 24},
+    {"hdg_m1",   "-1",    0xFD, TFT_BTN_FLUXSIM, 52, 198, 48, 24},
+    {"hdg_p1",   "+1",    0xFC, TFT_BTN_FLUXSIM, 220, 198, 48, 24},
+    {"hdg_p10",  "+10",   0xFB, TFT_BTN_FLUXSIM, 268, 198, 48, 24},
 };
 
 static int seatalkHeading(uint8_t byte1, uint8_t byte2) {
@@ -424,17 +440,25 @@ static const char *modeColorName(int mode) {
 //======================================================================
 
 // --- SD card helpers ---
-static int readLogCounter() {
-    File f = SD.open("/COUNTER.TXT", FILE_READ);
-    if (!f) return 0;
-    int c = f.parseInt();
-    f.close();
-    return c;
-}
-
-static void writeLogCounter(int c) {
-    File f = SD.open("/COUNTER.TXT", FILE_WRITE);
-    if (f) { f.println(c); f.close(); }
+static int findNextLogNumber() {
+    int maxN = 0;
+    File root = SD.open("/");
+    if (root) {
+        File entry = root.openNextFile();
+        while (entry) {
+            if (!entry.isDirectory()) {
+                String n(entry.name());
+                if (n.startsWith("LOG_") && n.endsWith(".TXT")) {
+                    int v = n.substring(4, 8).toInt();
+                    if (v > maxN) maxN = v;
+                }
+            }
+            entry.close();
+            entry = root.openNextFile();
+        }
+        root.close();
+    }
+    return maxN + 1;
 }
 
 static void cleanupOldLogs() {
@@ -490,14 +514,12 @@ static void logDatagram(const char *line) {
 static bool initSD() {
     SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     if (!SD.begin(SD_CS, SPI, 4000000)) return false;
-    logNumber = readLogCounter();
-    logNumber++;
-    writeLogCounter(logNumber);
+    logNumber = findNextLogNumber();
     char filename[32];
     snprintf(filename, sizeof(filename), "/LOG_%04d.TXT", logNumber);
     logFile = SD.open(filename, FILE_WRITE);
     if (!logFile) return false;
-    logFile.println("BenchPilot Log");
+    logFile.println(filename + 1);
     logFile.flush();
     return true;
 }
@@ -557,6 +579,20 @@ static void sendHeading() {
     unsigned long now = millis();
     if (now - _lastHdgTx < _hdgInterval) return;
 
+    int8_t rudder = g.rudder;
+    uint16_t oldDeg = _hdgDeg;
+    if (_hdgActive && g.mode == 2 && g.rudderValid && rudder >= -30 && rudder <= 30 && rudder != 0) {
+        float r = (float)rudder;
+        float rate = (fabs(r) / 30.0f) * 3.0f;
+        float step = rate * (_hdgInterval / 1000.0f);
+        if (r > 0)      _hdgFrac += step;
+        else if (r < 0) _hdgFrac -= step;
+        while (_hdgFrac >= 1.0f)  { _hdgFrac -= 1.0f; _hdgDeg = (_hdgDeg + 1) % 360; }
+        while (_hdgFrac <= -1.0f) { _hdgFrac += 1.0f; _hdgDeg = (_hdgDeg + 359) % 360; }
+    }
+    if (_hdgDeg != oldDeg)
+        _driftFlashIdx = (_hdgDeg > oldDeg || (oldDeg - _hdgDeg) > 180) ? 11 : 10;
+
     uint8_t deg = _hdgDeg % 360;
     uint8_t u = deg / 90;
     uint8_t temp = deg % 90;
@@ -564,25 +600,34 @@ static void sendHeading() {
     uint8_t odd = temp - vw * 2;
     u |= (odd * 2) << 2;
     uint8_t msg[] = {0x89, (uint8_t)((u << 4) | 0x02), vw, 0x00, 0x20};
+    _suppressEchoCmd = 0x89;
     sendDatagram(msg, 5);
+    _suppressEchoCmd = 0;
     _lastHdgTx = now;
+    char desc[MSG_TEXT_LEN], line[MSG_TEXT_LEN];
+    snprintf(desc, sizeof(desc), "HDG %d TX", deg);
+    uint8_t dg[] = {0x9C};
+    buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 1, desc);
+    g.pushMsg(line);
 }
 
 static bool _userCommanded = false;
 static int  _lastUserMode = -1;
 
 static void simHdg_int(uint16_t d) {
-    _hdgDeg = d; _hdgActive = true; _hdgInterval = 250; _lastHdgTx = 0; gBtnsDrawn = false;
+    _hdgDeg = d; _hdgActive = true; _hdgInterval = 250; _lastHdgTx = 0; _hdgFrac = 0; gBtnsDrawn = false;
 }
 static void stopHdg_int() {
-    _hdgActive = false; _hdgDeg = 0; gBtnsDrawn = false;
+    _hdgActive = false; _hdgDeg = 0; _hdgFrac = 0; gBtnsDrawn = false;
 }
 
 static void pressAutopilotButton(const struct ButtonDef &b) {
     uint8_t dg[] = {0x86, 0x21, b.cmd, (uint8_t)(b.cmd ^ 0xFF)};
     char desc[MSG_TEXT_LEN];
     char line[MSG_TEXT_LEN];
+    _suppressEchoCmd = 0x86;
     bool ok = sendDatagram(dg, 4);
+    _suppressEchoCmd = 0;
     if (ok) {
         snprintf(desc, sizeof(desc), "%s TX", b.label);
         if (b.cmd == 0x01) _lastUserMode = 2;
@@ -753,9 +798,12 @@ static void processByte(uint8_t b) {
             }
             len = 0;
 
-            buildLogLine(line, MSG_TEXT_LEN, millis(), buf, msgLen, desc);
-            g.pushMsg(line);
-            logDatagram(line);
+            if (cmd == _suppressEchoCmd) { _suppressEchoCmd = 0; }
+            else {
+                buildLogLine(line, MSG_TEXT_LEN, millis(), buf, msgLen, desc);
+                g.pushMsg(line);
+                logDatagram(line);
+            }
         }
     }
 }
@@ -800,6 +848,7 @@ static void playBeep(uint16_t freq, uint16_t dur) {
     static const Note beep[] = {{freq, dur}};
     playMelody(beep, 1);
 }
+static void playTick() { playBeep(2600, 8); }
 
 static void updateSpeaker() {
     if (_spkState != SPK_ACTIVE) return;
@@ -836,6 +885,10 @@ static void updateSpeaker() {
 static void drawAllButtons() {
     for (int i = 0; i < NUM_BUTTONS; i++) {
         auto &b = btns[i];
+        if (!_hdgActive && (b.cmd == 0xFE || b.cmd == 0xFD || b.cmd == 0xFC || b.cmd == 0xFB))
+            continue;
+        if (_hdgActive && (b.cmd == 0x23 || b.cmd == 0x28))
+            continue;
         uint16_t c = (b.cmd == 0xff)
             ? (_hdgActive ? TFT_BTN_FLUXSIM : TFT_BTN_FLUXSIM_DIM)
             : b.color;
@@ -1034,79 +1087,164 @@ static void drawWidgets() {
     }
 }
 
-static void logViewScroll(int dir) {
-    int total = min(g.msgLogCount, (int)MSG_LOG_SIZE);
-    int maxLines = 28;
-    int maxScroll = max(0, total - maxLines);
-    if (dir > 0) {
-        if (gLogScroll == 0) {
-            gLogFrozenNewest = (g.msgLogWriteIdx - 1 + MSG_LOG_SIZE) % MSG_LOG_SIZE;
-        }
-        gLogScroll = min(gLogScroll + 1, maxScroll);
-    } else {
-        gLogScroll = max(0, gLogScroll - 1);
-        if (gLogScroll == 0) gLogFrozenNewest = -1;
+static void msgKey(const char *msg, char *key, int keyLen) {
+    const char *c1 = strchr(msg, ',');
+    const char *body = c1 ? c1 + 1 : msg;
+    int ki = 0;
+    bool lastSpace = true;
+    for (; *body && ki < keyLen - 1; body++) {
+        char ch = *body;
+        if (ch >= '0' && ch <= '9') continue;
+        if (ch == ' ') { if (lastSpace) continue; lastSpace = true; }
+        else lastSpace = false;
+        key[ki++] = ch;
     }
+    while (ki > 0 && key[ki-1] == ' ') ki--;
+    key[ki] = 0;
+}
+
+static void logViewScroll(int dir) {
+    const int MAX_VISIBLE = (STATUS_BAND.y - 6) / 13;
+    int active = 0;
+    for (int i = 0; i < gSlotCount; i++)
+        if (gSlots[i].count > 0) active++;
+    if (active == 0) return;
+    int maxScroll = max(0, active - MAX_VISIBLE);
+    int step = max(1, MAX_VISIBLE / 3);
+    if (dir > 0) gLogScroll = min(gLogScroll + step, maxScroll);
+    else gLogScroll = max(0, gLogScroll - step);
 }
 
 static void drawLogView() {
     int total = min(g.msgLogCount, (int)MSG_LOG_SIZE);
-    int maxLines = 28;
-    int maxScroll = max(0, total - maxLines);
+
+    const int LINE_H = 13;
+    const int X_CNT = 2, X_TS = 50, X_HX = 110, X_DESC = 212;
+    const int HX_MAX_W = X_DESC - X_HX - 4;
+    const int TOP = 6;
+    const int MAX_VISIBLE = (STATUS_BAND.y - TOP) / LINE_H;
+
+    // Update existing slots from ring buffer, add new ones
+    for (int i = 0; i < gSlotCount; i++) gSlots[i].seen = false;
+
+    int newestIdx = (g.msgLogWriteIdx - 1 + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+    char curKey[64];
+    static int gNewestSlot = -1;
+    bool firstEncounter = true;
+
+    for (int i = 0; i < total; i++) {
+        int idx = (newestIdx - i + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+        const char *msg = g.msgLog[idx];
+        msgKey(msg, curKey, 64);
+
+        int found = -1;
+        for (int j = 0; j < gSlotCount; j++) {
+            if (strcmp(gSlots[j].key, curKey) == 0) { found = j; break; }
+        }
+        if (found >= 0) {
+            if (!gSlots[found].seen) {
+                gSlots[found].count = 1;
+                gSlots[found].seen = true;
+                strncpy(gSlots[found].text, msg, MSG_TEXT_LEN - 1);
+                if (firstEncounter) { gNewestSlot = found; firstEncounter = false; }
+            } else {
+                gSlots[found].count++;
+            }
+        } else if (gSlotCount < MAX_SLOTS) {
+            strcpy(gSlots[gSlotCount].key, curKey);
+            gSlots[gSlotCount].count = 1;
+            gSlots[gSlotCount].seen = true;
+            strncpy(gSlots[gSlotCount].text, msg, MSG_TEXT_LEN - 1);
+            if (firstEncounter) { gNewestSlot = gSlotCount; firstEncounter = false; }
+            gSlotCount++;
+        }
+    }
+
+    bool anyActive = false;
+    for (int i = 0; i < gSlotCount; i++)
+        if (gSlots[i].count > 0) { anyActive = true; break; }
+
+    if (!anyActive) {
+        tft.fillRect(0, 0, 320, STATUS_BAND.y, TFT_BLACK);
+        return;
+    }
+
+    int active = 0;
+    for (int i = 0; i < gSlotCount; i++)
+        if (gSlots[i].count > 0) active++;
+    int maxScroll = max(0, active - MAX_VISIBLE);
     gLogScroll = constrain(gLogScroll, 0, maxScroll);
-    int N = min(maxLines, total - gLogScroll);
+
     static int lastScroll = -1;
     bool scrollChanged = (gLogScroll != lastScroll);
     lastScroll = gLogScroll;
     if (gLogScroll == 0) {
         if (!scrollChanged && g.msgLogWriteIdx == gLogLastWriteIdx) return;
+        if (g.msgLogWriteIdx != gLogLastWriteIdx) playTick();
         gLogLastWriteIdx = g.msgLogWriteIdx;
     } else {
         if (!scrollChanged) return;
     }
-    int liveNewest = (g.msgLogWriteIdx - 1 + MSG_LOG_SIZE) % MSG_LOG_SIZE;
-    int newestIdx = (gLogScroll == 0) ? liveNewest : gLogFrozenNewest;
-    int startIdx = (newestIdx - gLogScroll - N + 1 + MSG_LOG_SIZE) % MSG_LOG_SIZE;
-    tft.setTextFont(1);
-    tft.setTextDatum(ML_DATUM);
+
+    tft.setTextFont(2); tft.setTextDatum(ML_DATUM);
     char buf[MSG_TEXT_LEN];
-    int idx = startIdx;
-    for (int line = 0; line < N; line++) {
-        const char *msg = g.msgLog[idx];
-        const char *c1 = strchr(msg, ',');
-        const char *c2 = strrchr(msg, ',');
-        int y = 4 + line * 8;
-        tft.fillRect(0, y, 320, 8, TFT_BLACK);
-        int x = 2;
+    int drawY = TOP;
+    int visIdx = -1;
+
+    for (int i = 0; i < gSlotCount && drawY + LINE_H <= STATUS_BAND.y; i++) {
+        if (gSlots[i].count == 0) continue;
+        visIdx++;
+        if (visIdx < gLogScroll) continue;
+
+        int y = drawY;
+        uint16_t rowBg = (i == gNewestSlot) ? TFT_HL_BG : TFT_BLACK;
+        int barY = y - LINE_H/2;
+        tft.fillRect(0, barY, 320, LINE_H, rowBg);
+
+        snprintf(buf, sizeof(buf), "x%d", gSlots[i].count);
+        tft.setTextColor(i == gNewestSlot ? TFT_LOG_SEP_HI : TFT_LOG_SEP);
+        tft.drawString(buf, X_CNT, y);
+
+        const char *t = gSlots[i].text;
+        const char *c1 = strchr(t, ',');
+        const char *c2 = strrchr(t, ',');
         if (c1 && c2 && c2 > c1) {
-            int n = c1 - msg;
-            memcpy(buf, msg, n); buf[n] = 0;
-            tft.setTextColor(TFT_LOG_TS, TFT_BLACK);
-            tft.drawString(buf, x, y); x += tft.textWidth(buf);
-            tft.setTextColor(TFT_LOG_SEP, TFT_BLACK);
-            tft.drawString(",", x, y); x += tft.textWidth(",");
+            int n = c1 - t;
+            memcpy(buf, t, n); buf[n] = 0;
+            tft.setTextColor(i == gNewestSlot ? TFT_LOG_TS_HI : TFT_LOG_TS);
+            tft.drawString(buf, X_TS, y);
+
             n = c2 - c1 - 1;
             memcpy(buf, c1 + 1, n); buf[n] = 0;
-            tft.setTextColor(TFT_LOG_HX, TFT_BLACK);
-            tft.drawString(buf, x, y); x += tft.textWidth(buf);
-            tft.setTextColor(TFT_LOG_SEP, TFT_BLACK);
-            tft.drawString(",", x, y); x += tft.textWidth(",");
-            tft.setTextColor(TFT_LOG_DESC, TFT_BLACK);
-            tft.drawString(c2 + 1, x, y); x += tft.textWidth(c2 + 1);
-        } else {
-            tft.setTextColor(TFT_LOG_TS, TFT_BLACK);
-            tft.drawString(msg, x, y); x += tft.textWidth(msg);
+            int hxW = tft.textWidth(buf);
+            tft.setTextColor(i == gNewestSlot ? TFT_LOG_HX_HI : TFT_LOG_HX);
+            if (hxW > HX_MAX_W) {
+                int fit = 0;
+                while (fit < n) {
+                    char tmp = buf[fit + 1]; buf[fit + 1] = 0;
+                    if (tft.textWidth(buf) > HX_MAX_W) { buf[fit + 1] = tmp; break; }
+                    buf[fit + 1] = tmp; fit++;
+                }
+                char saved = buf[fit]; buf[fit] = 0;
+                tft.drawString(buf, X_HX, y);
+                buf[fit] = saved;
+                int y2 = y + LINE_H;
+                int barY2 = y2 - LINE_H/2;
+                tft.fillRect(0, barY2, 320, LINE_H, rowBg);
+                tft.drawString(buf + fit, X_HX, y2);
+                drawY += LINE_H;
+            } else {
+                tft.drawString(buf, X_HX, y);
+            }
+
+            tft.setTextColor(i == gNewestSlot ? TFT_LOG_HI : TFT_LOG_DESC);
+            tft.drawString(c2 + 1, X_DESC, y);
         }
-        if (x < 320) tft.fillRect(x, y, 320 - x, 8, TFT_BLACK);
-        idx = (idx + 1) % MSG_LOG_SIZE;
+        drawY += LINE_H;
     }
-    if (N < maxLines) {
-        tft.fillRect(0, 4 + N * 8, 320, STATUS_BAND.y - (4 + N * 8), TFT_BLACK);
-    }
-    if (total == 0) {
-        tft.setTextColor(TFT_LOG_TS, TFT_BLACK);
-        tft.drawString("No messages", 114, 112);
-    }
+
+    if (drawY < STATUS_BAND.y)
+        tft.fillRect(0, drawY, 320, STATUS_BAND.y - drawY, TFT_BLACK);
 }
 
 static String formatUptime(unsigned long ms) {
@@ -1652,7 +1790,7 @@ static void handleRoot() {
 <link rel="manifest" href="/manifest.json">
 <title>BenchPilot</title>
 <style>
-/* Colors computed from TFT RGB565: AP=#410010 ADJ/NAV=#001062 FLUXSIM=#620062 HDG=#0ff TRG=#0f0 ALARM=#f00 */
+/* Colors computed from TFT RGB565: AP=#410010 ADJ/NAV=#001062 FLUXSIM=#cca800 FLUXSIM_DIM=#555 HDGADJ=#cca800 HDG=#0ff TRG=#0f0 ALARM=#f00 */
 *{box-sizing:border-box}
 body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;padding:10px;font-size:clamp(14px,1.6vw,20px);min-height:100vh;display:flex;flex-direction:column}
 .wrap{max-width:960px;width:100%;margin:0 auto;display:flex;flex-direction:column;flex:1}
@@ -1660,6 +1798,13 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 .hx{color:#6a8b6a}
 .sep{color:#7a6a7a}
 .hi{color:#d9a040;font-weight:bold}
+.log-line{white-space:pre-wrap;font-size:.85em;line-height:1.5;padding:1px 0}
+.log-line.latest{background:#332200}
+.log-line.latest .log-desc{color:#fda;font-weight:bold}
+.log-cnt{display:inline-block;width:5ch;color:#7a6a7a}
+.log-ts{display:inline-block;width:9ch;color:#6a8ba8}
+.log-hx{display:inline-block;width:22ch;color:#6a8b6a;word-break:break-all}
+.log-desc{display:inline-block;color:#d9a040}
 .mode{font-size:1.2em;font-weight:bold;text-align:center;margin:4px 0 4px 0;min-height:1.2em}
 .hdg{font-size:3.6em;font-weight:bold;text-align:center;color:#0ff;margin:0 0 4px 0;line-height:1.1}
 .trg{font-size:1.4em;font-weight:bold;text-align:center;color:#0f0;margin:0 0 4px 0;display:none}
@@ -1684,8 +1829,14 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 .btns .adj{background:#001062}.btns .adj10{background:#001062}
 .btns .wind{background:#001062}.btns .track{background:#001062}
 .btns .fluxsim{background:#cca800}
-.btns .fluxsim.dim{background:#554400;opacity:.6}
-#frames{background:#111;border:1px solid #222;border-radius:4px;padding:8px;flex:1;overflow-y:hidden;font-size:0.85em;line-height:1.6;min-height:1.8em;max-height:60vh}
+.btns .fluxsim.dim{background:#555;opacity:.6}
+.btns .hdgadj{background:#cca800}
+.btns .hdgadj.pulse{filter:brightness(1.8)}
+#frames{background:#111;border:1px solid #222;border-radius:4px;padding:6px 8px;flex:1;overflow-y:auto;font-size:.85em;min-height:1.8em;max-height:45vh}
+.foot{text-align:center;margin:3px 0;font-size:.7em}
+.foot a{color:#6a8ba8;text-decoration:none}.foot a:hover{color:#d9a040}
+.foot a.active{color:#d9a040}
+.foot span{color:#444;margin:0 4px}
 </style>
 </head>
 <body>
@@ -1710,11 +1861,16 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
   <button class="adj10" onclick="apCmd('minus10')">-10&deg;</button>
   <button class="adj10" onclick="apCmd('plus10')">+10&deg;</button>
 </div>
-<div class="btns" style="grid-template-columns:96fr 108fr 96fr">
-  <button class="wind" onclick="apCmd('wind')">WIND</button>
+<div class="btns" style="grid-template-columns:48fr 48fr 108fr 48fr 48fr">
+  <button class="wind" id="windbtn" onclick="apCmd('wind')" style="grid-column:span 2">WIND</button>
+  <button class="hdgadj" id="hdg_m10" onclick="hdgAdj(-10)" style="display:none">-10</button>
+  <button class="hdgadj" id="hdg_m1" onclick="hdgAdj(-1)" style="display:none">-1</button>
   <button class="fluxsim" id="fluxsimbtn" onclick="simToggle()">FLUXSIM</button>
-  <button class="track" onclick="apCmd('track')">TRACK</button>
+  <button class="track" id="trackbtn" onclick="apCmd('track')" style="grid-column:span 2">TRACK</button>
+  <button class="hdgadj" id="hdg_p1" onclick="hdgAdj(1)" style="display:none">+1</button>
+  <button class="hdgadj" id="hdg_p10" onclick="hdgAdj(10)" style="display:none">+10</button>
 </div>
+<div class="foot"><a id="m_live" href="#" onclick="showLive();return false">live</a><span>|</span><a id="m_logs" href="#" onclick="showLogFiles();return false">logs</a></div>
 <div id="frames">--</div>
 <script>
 function beep(){
@@ -1728,21 +1884,33 @@ function beep(){
   }catch(e){}
   try{navigator.vibrate(30)}catch(e){}
 }
+function simVis(active){
+  document.getElementById('windbtn').style.display=active?'none':'';
+  document.getElementById('trackbtn').style.display=active?'none':'';
+  for(let id of ['hdg_m10','hdg_m1','hdg_p1','hdg_p10'])
+    document.getElementById(id).style.display=active?'':'none';
+}
 async function simToggle(){
   beep();
   let b=document.getElementById('fluxsimbtn');
   b.classList.toggle('dim');
-  if(b.classList.contains('dim')){
+  let active=!b.classList.contains('dim');
+  simVis(active);
+  if(!active){
     await fetch('/api/heading/stop');
   } else {
-    await fetch('/api/heading?deg=180&interval=250');
+    await fetch('/api/heading?deg='+_lastHdg+'&interval=250');
   }
+}
+function hdgAdj(delta){
+  beep();
+  fetch('/api/heading/adj?d='+delta);
 }
 async function apCmd(cmd){
   beep();
   await fetch('/api/autopilot?cmd='+cmd);
 }
-let paused=false,pausedData=null;
+let paused=false,pausedData=null,_lastHdg=180,_prevHdgPulse=-1,_newestKey='',gSlots=new Map();
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function sensor(v,u,s){return v>=0?'<span class="s">'+s+' '+v+u+'</span>':''}
 function renderWidgets(d){
@@ -1751,7 +1919,7 @@ function renderWidgets(d){
     for(let w of d.display){
       switch(w.w){
         case 'MODE': mode='<div class="mode" id="mode" style="color:'+(w.c=='yellow'?'#f0f':w.c=='green'?'#0f0':'#f0f')+'">'+w.t+'</div>'; break;
-        case 'HDG': hdg='<div class="hdg" id="hdg">'+(w.t>=0?w.t:'---')+'</div>'; break;
+        case 'HDG': hdg='<div class="hdg" id="hdg">'+(w.t>=0?w.t:'---')+'</div>'; if(w.t>=0)_lastHdg=w.t; break;
         case 'RDR': if(w.num) rdr='<div class="rdr" id="rdr">'+(w.v?w.t:'--')+'</div>'; break;
         case 'ALARMS':{
           let sim=w.sim;
@@ -1784,7 +1952,16 @@ for(let i=-25;i<=25;i+=5){
 function render(d){
   renderWidgets(d);
   let fb=document.getElementById('fluxsimbtn');
-  for(let w of d.display) if(w.w=='ALARMS') fb.classList.toggle('dim',!w.sim);
+  for(let w of d.display) if(w.w=='ALARMS'){fb.classList.toggle('dim',!w.sim);simVis(w.sim);}
+  // pulse hdg adj buttons when FLUXSIM drift changes heading
+  for(let w of d.display) if(w.w=='HDG' && w.t>=0){
+    if(_prevHdgPulse >= 0 && w.t != _prevHdgPulse){
+      let dir=(w.t>_prevHdgPulse||(360+w.t-_prevHdgPulse)%360<180)?'hdg_p1':'hdg_m1';
+      let btn=document.getElementById(dir);
+      if(btn){btn.classList.add('pulse');setTimeout(()=>btn.classList.remove('pulse'),200);}
+    }
+    _prevHdgPulse=w.t;
+  }
   // rudder bar — same geometry/colors as CYD: fill starts 1% off center, ±30° = 49%
   let rf=document.getElementById('rdrfill');
   if(d.rudder_valid){
@@ -1811,25 +1988,46 @@ function render(d){
   if(d.gps_sats >= 0) s += '<span class="s">SATS: '+d.gps_sats+' HDOP '+d.gps_hdop+'</span>';
   if(d.gps_lat_deg >= 0) s += '<span class="s">GPS: '+d.gps_lat_deg+'\u00B0 '+(d.gps_lat_min/100).toFixed(2)+'\' '+(d.gps_lat_n?'N':'S')+' '+d.gps_lon_deg+'\u00B0 '+(d.gps_lon_min/100).toFixed(2)+'\' '+(d.gps_lon_e?'E':'W')+'</span>';
   document.getElementById('sensors').innerHTML=s;
-  // msgs — newest first
+  // msgs — persistent slot dedup + static columns
   let h='';
   if(d.msgs&&d.msgs.length){
-    for(let i=d.msgs.length-1;i>=0;i--){
-      let m=d.msgs[i], p=m.lastIndexOf(',');
-      if(p>=0){
-        var f=m.indexOf(','),l=m.lastIndexOf(',');
-        h+='<div><span class="ts">'+esc(m.slice(0,f))+'</span><span class="sep">,</span><span class="hx">'+esc(m.slice(f+1,l))+'</span><span class="sep">,</span><span class="hi">'+esc(m.slice(l+1))+'</span></div>';
+    let seen=new Set(), newestKey='';
+    for(let m of d.msgs){
+      let p=m.indexOf(','),body=p>=0?m.slice(p+1):m;
+      let k=body.replace(/\d/g,'').replace(/\s+/g,' ').trim();
+      if(!seen.has(k)){
+        seen.add(k);
+        if(!newestKey) newestKey=k;
+        let s=gSlots.get(k);
+        if(s){s.c=1;s.t=m;}else gSlots.set(k,{c:1,t:m});
       } else {
-        h+='<div><span class="hx">'+esc(m)+'</span></div>';
+        let s=gSlots.get(k); if(s)s.c++;
       }
+    }
+    for(let[k,s]of gSlots){
+      if(!s.c) continue;
+      h+=logLine(s.t,s.c,k===newestKey);
+    }
+    if(newestKey&&newestKey!==_newestKey){
+      _newestKey=newestKey;
+      try{let a=new AudioContext(),o=a.createOscillator();o.type='square';o.frequency.value=1200;o.connect(a.destination);o.start();o.stop(a.currentTime+0.015);}catch(e){}
     }
   }
   let frames=document.getElementById('frames');
-  frames.innerHTML=h||'<span style="color:#555">--</span>';
-  frames.scrollTop=0;
+  let st=frames.scrollTop, sh=frames.scrollHeight;
+  frames.innerHTML=h||'';
+  if(st>0) frames.scrollTop=st+(frames.scrollHeight-sh);
 }
-async function poll(){let r=await fetch('/status');let d=await r.json();render(d)}
-setInterval(poll,1000);poll();
+function logLine(msg,cnt,latest){
+  let p=msg.indexOf(','),l=msg.lastIndexOf(',');
+  if(p>=0&&l>p){
+    let ts=esc(msg.slice(0,p)),hx=esc(msg.slice(p+1,l)),desc=esc(msg.slice(l+1));
+    return '<div class="log-line'+(latest?' latest':'')+'"><span class="log-cnt">x'+cnt+'</span><span class="log-ts">'+ts+'</span><span class="log-hx">'+hx+'</span><span class="log-desc">'+desc+'</span></div>';
+  }
+  return '<div class="log-line'+(latest?' latest':'')+'"><span class="log-cnt">x'+cnt+'</span><span class="log-ts">--</span><span class="log-hx">--</span><span class="log-desc">'+esc(msg)+'</span></div>';
+}
+async function poll(){if(paused)return;let r=await fetch('/status');let d=await r.json();render(d)}
+setInterval(poll,1000);poll();menuActive('m_live');
 document.getElementById('frames').onclick=function(){
   let t=[];
   this.querySelectorAll('div').forEach(d=>t.push(d.textContent));
@@ -1847,6 +2045,32 @@ function showToast(msg){
   document.body.appendChild(el);
   requestAnimationFrame(()=>el.style.opacity='1');
   setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),300)},1500);
+}
+function menuActive(id){
+  document.querySelectorAll('.foot a').forEach(a=>a.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+function setFooter(h){ document.querySelector('.foot').innerHTML=h; }
+function showLive(){ paused=false; setFooter('<a id="m_live" href="#" onclick="showLive();return false">live</a><span style="color:#444">|</span><a id="m_logs" href="#" onclick="showLogFiles();return false">logs</a>'); menuActive('m_live'); poll(); }
+async function showLogFiles(){
+  paused=true; setFooter('<div style="text-align:right"><a href="#" onclick="delLogs();return false" style="color:#6a8ba8">delete all logs</a></div>');
+  let r=await fetch('/api/files'),files=await r.json();
+  files.sort((a,b)=>b.name.localeCompare(a.name));
+  let h='';
+  for(let f of files)
+    h+='<div><a href="#" onclick="viewFile(\''+esc(f.name)+'\');return false" style="color:#6a8ba8">'+esc(f.name)+'</a> <span style="color:#555">('+f.size+' bytes)</span></div>';
+  document.getElementById('frames').innerHTML=h;
+}
+async function viewFile(name){
+  paused=true; setFooter('<a href="#" onclick="showLogFiles();return false" style="color:#6a8ba8">\u2190</a>');
+  let r=await fetch('/api/download?file='+name),txt=await r.text();
+  let h='<pre style="white-space:pre-wrap;font-size:.75em;line-height:1.4;margin:0">'+esc(txt)+'</pre>';
+  document.getElementById('frames').innerHTML=h;
+}
+async function delLogs(){
+  if(!confirm('Delete all log files?'))return;
+  await fetch('/api/logs/clear');
+  showLogFiles();
 }
 </script>
 </div>
@@ -1936,10 +2160,10 @@ static void handleStatus() {
     json += "],";
     json += "\"msgs\":[";
     int lines = min(g.msgLogCount, 60);
-    int startIdx = (g.msgLogWriteIdx - lines + MSG_LOG_SIZE) % MSG_LOG_SIZE;
+    int newestIdx = (g.msgLogWriteIdx - 1 + MSG_LOG_SIZE) % MSG_LOG_SIZE;
     for (int i = 0; i < lines; i++) {
         if (i > 0) json += ",";
-        int idx = (startIdx + i) % MSG_LOG_SIZE;
+        int idx = (newestIdx - i + MSG_LOG_SIZE) % MSG_LOG_SIZE;
         json += "\"" + String(g.msgLog[idx]) + "\"";
     }
     json += "]}";
@@ -1962,10 +2186,13 @@ static void setupWebServer() {
         _hdgDeg = h;
         _hdgActive = true;
         _lastHdgTx = 0;
+        _hdgFrac = 0;
         gBtnsDrawn = false;
-        char desc[MSG_TEXT_LEN];
-        snprintf(desc, sizeof(desc), "9C Hdg %d TX", h);
-        g.pushMsg(desc);
+        char desc[MSG_TEXT_LEN], line[MSG_TEXT_LEN];
+        snprintf(desc, sizeof(desc), "HDG %d TX", h);
+        uint8_t dg[] = {0x9C};
+        buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 1, desc);
+        g.pushMsg(line);
         String json = "{\"status\":\"active\",\"heading\":" + String(h)
                     + ",\"interval\":" + String(_hdgInterval)
                     + ",\"msg\":\"0x9C\"}";
@@ -1974,8 +2201,22 @@ static void setupWebServer() {
     server.on("/api/heading/stop", []() {
         _hdgActive = false;
         _hdgDeg = 0;
+        _hdgFrac = 0;
         gBtnsDrawn = false;
         server.send(200, "application/json", "{\"status\":\"stopped\"}");
+    });
+    server.on("/api/heading/adj", []() {
+        String d = server.arg("d");
+        int delta = constrain(d.toInt(), -10, 10);
+        _hdgDeg = (_hdgDeg + 360 + delta) % 360;
+        _hdgFrac = 0;
+        gBtnsDrawn = false;
+        char desc[MSG_TEXT_LEN], line[MSG_TEXT_LEN];
+        snprintf(desc, sizeof(desc), "HDG %d TX", _hdgDeg);
+        uint8_t dg[] = {0x9C};
+        buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 1, desc);
+        g.pushMsg(line);
+        server.send(200, "application/json", "{\"status\":\"ok\",\"heading\":" + String(_hdgDeg) + "}");
     });
     server.on("/api/autopilot", []() {
         String cmd = server.arg("cmd");
@@ -2017,26 +2258,63 @@ static void setupWebServer() {
         }
         server.send(400, "application/json", "{\"error\":\"unknown cmd\"}");
     });
-    server.on("/logs", HTTP_GET, []() {
-        String html = "<html><body><h2>Log Files</h2><ul>";
+    server.on("/api/logs/clear", HTTP_GET, []() {
+        if (logFile) { logFile.close(); logFile = (File)nullptr; }
+        int deleted = 0;
         File root = SD.open("/");
         if (root) {
             File entry = root.openNextFile();
             while (entry) {
                 if (!entry.isDirectory()) {
                     String name = String(entry.name());
-                    if (name.endsWith(".TXT")) {
-                        html += "<li><a href='/api/download?file=" + name + "'>" + name + "</a> (";
-                        html += entry.size();
-                        html += " bytes)</li>";
-                    }
+                    if (name.endsWith(".TXT")) { entry.close(); SD.remove("/" + name); deleted++; }
+                    else entry.close();
+                } else entry.close();
+                entry = root.openNextFile();
+            }
+            root.close();
+        }
+        logNumber = findNextLogNumber();
+        char buf[32];
+        snprintf(buf, sizeof(buf), "/LOG_%04d.TXT", logNumber);
+        logFile = SD.open(buf, FILE_WRITE);
+        if (logFile) logFile.println(buf + 1);
+        server.send(200, "application/json", "{\"status\":\"ok\",\"deleted\":" + String(deleted) + "}");
+    });
+    server.on("/logs", HTTP_GET, []() {
+        String html = R"log(<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;padding:10px;font-size:clamp(14px,1.6vw,20px)}
+a{color:#d9a040;text-decoration:none}a:hover{color:#fff}
+h2{color:#6a8ba8;margin:4px 0}ul{list-style:none;padding:0}
+li{padding:3px 0}span{color:#555}.nav{margin-top:8px;font-size:.85em}
+</style></head><body><h2>Log Files</h2><form style="margin:6px 0" onsubmit="return confirm('Delete all log files?')" action="/api/logs/clear" method="get"><button style="background:#410010;color:#f88;border:0;padding:4px 12px;border-radius:3px;font-family:monospace;font-size:inherit;cursor:pointer">Delete All Logs</button></form><ul>)log";
+        String names[200];
+        int count = 0;
+        File root = SD.open("/");
+        if (root) {
+            File entry = root.openNextFile();
+            while (entry && count < 200) {
+                if (!entry.isDirectory()) {
+                    String name = String(entry.name());
+                    if (name.endsWith(".TXT")) names[count++] = name;
                 }
                 entry.close();
                 entry = root.openNextFile();
             }
             root.close();
         }
-        html += "</ul><a href='/'>Back</a></body></html>";
+        // Sort descending (newest first)
+        for (int i = 0; i < count - 1; i++) {
+            for (int j = i + 1; j < count; j++) {
+                if (names[j] > names[i]) { String t = names[i]; names[i] = names[j]; names[j] = t; }
+            }
+        }
+        for (int i = 0; i < count; i++) {
+            File f = SD.open("/" + names[i]);
+            int sz = f ? f.size() : 0; if (f) f.close();
+            html += "<li><a href='/api/download?file=" + names[i] + "'>" + names[i] + "</a> <span>(" + String(sz) + " bytes)</span></li>";
+        }
+        html += "</ul><div class='nav'><a href='/'>Back to Helm</a></div></body></html>";
         server.send(200, "text/html", html);
     });
     server.on("/api/download", HTTP_GET, []() {
@@ -2194,6 +2472,11 @@ void loop() {
 
     sendHeading();
 
+    if (!gLogView && _driftFlashIdx >= 0) {
+        flashButton(_driftFlashIdx);
+        _driftFlashIdx = -1;
+    }
+
     if (!_txActive) {
         while (Seatalk.available() > 0) {
             uint8_t b = Seatalk.read();
@@ -2214,9 +2497,7 @@ void loop() {
         if (now - lastBtnPress >= TOUCH_DEBOUNCE_MS) {
             if (gLogView) {
                 if (touchX < LOG_SCROLL_LEFT || touchX >= LOG_SCROLL_RIGHT) {
-                    gLogViewDir = (touchY < LOG_SCROLL_MID) ? 1 : -1;
-                    gLogViewLastMove = now;
-                    logViewScroll(gLogViewDir);
+                    logViewScroll((touchY < LOG_SCROLL_MID) ? 1 : -1);
                 } else {
                     gLogView = false;
                     invalidateBands();
@@ -2229,11 +2510,20 @@ void loop() {
                     auto &b = btns[i];
                     if (touchX >= b.x && touchX < b.x + b.w &&
                         touchY >= b.y && touchY < b.y + b.h) {
+                        if (_hdgActive && (b.cmd == 0x23 || b.cmd == 0x28)) continue;
                         flashButton(i);
                         lastBtnPress = now;
                         if (b.cmd == 0xff) {
                             if (_hdgActive) stopHdg_int();
-                            else simHdg_int(180);
+                            else simHdg_int(g.heading >= 0 ? g.heading : 180);
+                        } else if (b.cmd == 0xFE) {
+                            _hdgDeg = (_hdgDeg + 350) % 360; _hdgFrac = 0; gBtnsDrawn = false;
+                        } else if (b.cmd == 0xFD) {
+                            _hdgDeg = (_hdgDeg + 359) % 360; _hdgFrac = 0; gBtnsDrawn = false;
+                        } else if (b.cmd == 0xFC) {
+                            _hdgDeg = (_hdgDeg + 1) % 360; _hdgFrac = 0; gBtnsDrawn = false;
+                        } else if (b.cmd == 0xFB) {
+                            _hdgDeg = (_hdgDeg + 10) % 360; _hdgFrac = 0; gBtnsDrawn = false;
                         } else {
                             pressAutopilotButton(b);
                         }
@@ -2244,26 +2534,11 @@ void loop() {
                 if (!handled && touchY < LOG_TAP_BOUNDARY) {
                     gLogView = true;
                     gLogScroll = 0;
-                    gLogFrozenNewest = -1;
                     gLogLastWriteIdx = -1;
-                    gLogViewDir = 0;
                     tft.fillScreen(TFT_BLACK);
                     lastBtnPress = now;
                 }
             }
-        }
-    }
-
-    // Auto-repeat scroll while finger held in log view
-    if (gLogView && gLogViewDir != 0) {
-        unsigned long now = millis();
-        if (digitalRead(XPT2046_IRQ) == LOW) {
-            if (now - gLogViewLastMove >= 150) {
-                gLogViewLastMove = now;
-                logViewScroll(gLogViewDir);
-            }
-        } else {
-            gLogViewDir = 0;
         }
     }
 
