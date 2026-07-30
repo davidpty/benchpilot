@@ -1833,7 +1833,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 .btns .hdgadj{background:#cca800}
 .btns .hdgadj.pulse{filter:brightness(1.8)}
 #frames{background:#111;border:1px solid #222;border-radius:4px;padding:6px 8px;flex:1;overflow-y:auto;font-size:.85em;min-height:1.8em;max-height:45vh}
-.foot{text-align:center;margin:3px 0;font-size:.7em}
+.foot{text-align:center;margin:3px 0;font-size:.85em}
 .foot a{color:#6a8ba8;text-decoration:none}.foot a:hover{color:#d9a040}
 .foot span{color:#444;margin:0 4px}
 </style>
@@ -1869,7 +1869,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
   <button class="hdgadj" id="hdg_p1" onclick="hdgAdj(1)" style="display:none">+1</button>
   <button class="hdgadj" id="hdg_p10" onclick="hdgAdj(10)" style="display:none">+10</button>
 </div>
-<div class="foot" style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center"><span></span><span><a href="#" onclick="showLive();return false" style="color:#d9a040">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false">logs</a></span><span></span></div>
+<div class="foot" style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;width:100%"><span></span><span><a href="#" onclick="showLive();return false" style="color:#d9a040">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false">logs</a></span><span></span></div>
 <div id="frames">--</div>
 <script>
 function beep(){
@@ -1949,6 +1949,7 @@ for(let i=-25;i<=25;i+=5){
   rdrbar.insertBefore(t,rdrnumEl);
 }
 function render(d){
+  if(paused) return;
   renderWidgets(d);
   let fb=document.getElementById('fluxsimbtn');
   for(let w of d.display) if(w.w=='ALARMS'){fb.classList.toggle('dim',!w.sim);simVis(w.sim);}
@@ -2045,7 +2046,7 @@ function showToast(msg){
   requestAnimationFrame(()=>el.style.opacity='1');
   setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),300)},1500);
 }
-function setFooter(l,c,r){ document.querySelector('.foot').innerHTML='<div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center">'+(l||'<span></span>')+c+(r||'<span></span>')+'</div>'; }
+function setFooter(l,c,r){ document.querySelector('.foot').innerHTML='<div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;width:100%">'+(l||'<span></span>')+'<span>'+c+'</span>'+(r||'<span></span>')+'</div>'; }
 function showLive(){ paused=false; setFooter(null,'<a href="#" onclick="showLive();return false" style="color:#d9a040">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false">logs</a>',null); poll(); }
 async function showLogFiles(){
   paused=true; setFooter('<span><a href="#" onclick="showLive();return false" style="color:#6a8ba8">\u2190</a></span>','<a href="#" onclick="showLive();return false">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false" style="color:#d9a040">logs</a>','<span style="text-align:right"><a href="#" onclick="delLogs();return false" style="color:#6a8ba8">delete all logs</a></span>');
@@ -2059,7 +2060,7 @@ async function showLogFiles(){
 async function viewFile(name){
   paused=true; setFooter('<span><a href="#" onclick="showLogFiles();return false" style="color:#6a8ba8">\u2190</a></span>','<a href="#" onclick="showLive();return false">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false" style="color:#d9a040">logs</a>',null);
   let r=await fetch('/api/download?file='+name),txt=await r.text();
-  let h='<pre style="white-space:pre-wrap;font-size:.75em;line-height:1.4;margin:0">'+esc(txt)+'</pre>';
+  let h='<pre style="white-space:pre-wrap;font-size:.85em;line-height:1.4;margin:0">'+esc(txt)+'</pre>';
   document.getElementById('frames').innerHTML=h;
 }
 async function delLogs(){
