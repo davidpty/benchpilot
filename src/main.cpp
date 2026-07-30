@@ -1835,7 +1835,6 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 #frames{background:#111;border:1px solid #222;border-radius:4px;padding:6px 8px;flex:1;overflow-y:auto;font-size:.85em;min-height:1.8em;max-height:45vh}
 .foot{text-align:center;margin:3px 0;font-size:.7em}
 .foot a{color:#6a8ba8;text-decoration:none}.foot a:hover{color:#d9a040}
-.foot a.active{color:#d9a040}
 .foot span{color:#444;margin:0 4px}
 </style>
 </head>
@@ -1870,7 +1869,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
   <button class="hdgadj" id="hdg_p1" onclick="hdgAdj(1)" style="display:none">+1</button>
   <button class="hdgadj" id="hdg_p10" onclick="hdgAdj(10)" style="display:none">+10</button>
 </div>
-<div class="foot"><a id="m_live" href="#" onclick="showLive();return false">live</a><span>|</span><a id="m_logs" href="#" onclick="showLogFiles();return false">logs</a></div>
+<div class="foot" style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center"><span></span><span><a href="#" onclick="showLive();return false" style="color:#d9a040">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false">logs</a></span><span></span></div>
 <div id="frames">--</div>
 <script>
 function beep(){
@@ -2027,7 +2026,7 @@ function logLine(msg,cnt,latest){
   return '<div class="log-line'+(latest?' latest':'')+'"><span class="log-cnt">x'+cnt+'</span><span class="log-ts">--</span><span class="log-hx">--</span><span class="log-desc">'+esc(msg)+'</span></div>';
 }
 async function poll(){if(paused)return;let r=await fetch('/status');let d=await r.json();render(d)}
-setInterval(poll,1000);poll();menuActive('m_live');
+setInterval(poll,1000);poll();
 document.getElementById('frames').onclick=function(){
   let t=[];
   this.querySelectorAll('div').forEach(d=>t.push(d.textContent));
@@ -2046,14 +2045,10 @@ function showToast(msg){
   requestAnimationFrame(()=>el.style.opacity='1');
   setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.remove(),300)},1500);
 }
-function menuActive(id){
-  document.querySelectorAll('.foot a').forEach(a=>a.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-}
-function setFooter(h){ document.querySelector('.foot').innerHTML=h; }
-function showLive(){ paused=false; setFooter('<a id="m_live" href="#" onclick="showLive();return false">live</a><span style="color:#444">|</span><a id="m_logs" href="#" onclick="showLogFiles();return false">logs</a>'); menuActive('m_live'); poll(); }
+function setFooter(l,c,r){ document.querySelector('.foot').innerHTML='<div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center">'+(l||'<span></span>')+c+(r||'<span></span>')+'</div>'; }
+function showLive(){ paused=false; setFooter(null,'<a href="#" onclick="showLive();return false" style="color:#d9a040">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false">logs</a>',null); poll(); }
 async function showLogFiles(){
-  paused=true; setFooter('<div style="text-align:right"><a href="#" onclick="delLogs();return false" style="color:#6a8ba8">delete all logs</a></div>');
+  paused=true; setFooter('<span><a href="#" onclick="showLive();return false" style="color:#6a8ba8">\u2190</a></span>','<a href="#" onclick="showLive();return false">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false" style="color:#d9a040">logs</a>','<span style="text-align:right"><a href="#" onclick="delLogs();return false" style="color:#6a8ba8">delete all logs</a></span>');
   let r=await fetch('/api/files'),files=await r.json();
   files.sort((a,b)=>b.name.localeCompare(a.name));
   let h='';
@@ -2062,7 +2057,7 @@ async function showLogFiles(){
   document.getElementById('frames').innerHTML=h;
 }
 async function viewFile(name){
-  paused=true; setFooter('<a href="#" onclick="showLogFiles();return false" style="color:#6a8ba8">\u2190</a>');
+  paused=true; setFooter('<span><a href="#" onclick="showLogFiles();return false" style="color:#6a8ba8">\u2190</a></span>','<a href="#" onclick="showLive();return false">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false" style="color:#d9a040">logs</a>',null);
   let r=await fetch('/api/download?file='+name),txt=await r.text();
   let h='<pre style="white-space:pre-wrap;font-size:.75em;line-height:1.4;margin:0">'+esc(txt)+'</pre>';
   document.getElementById('frames').innerHTML=h;
@@ -2086,7 +2081,7 @@ static void handleStatus() {
     bool active = (lastPacketTime > 0 && dt < 3000);
 
     String json;
-    json.reserve(4096);
+    json.reserve(8192);
     json = "{";
     json += "\"wifi\":" + String(wifiConnected ? "true" : "false") + ",";
     json += "\"ap\":\"" + String(AP_SSID) + "\",";
@@ -2159,7 +2154,7 @@ static void handleStatus() {
     }
     json += "],";
     json += "\"msgs\":[";
-    int lines = min(g.msgLogCount, 60);
+    int lines = min(g.msgLogCount, 200);
     int newestIdx = (g.msgLogWriteIdx - 1 + MSG_LOG_SIZE) % MSG_LOG_SIZE;
     for (int i = 0; i < lines; i++) {
         if (i > 0) json += ",";
