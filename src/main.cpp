@@ -42,6 +42,7 @@ static uint8_t _suppressEchoCmd = 0;
 
 // Heading TX state (periodic)
 static bool _hdgActive = false;
+static bool _hdgAutoDrift = true;
 static uint16_t _hdgDeg = 0;
 static unsigned long _hdgInterval = 250;
 static unsigned long _lastHdgTx = 0;
@@ -363,12 +364,16 @@ static void invalidateBands() {
 #define TFT_MODE_ACT    0x07E0  // green
 #define TFT_MODE_FALL   TFT_MODE_STBY
 #define TFT_HDG         0x07FF  // cyan
+#define TFT_HDG_SIM     0xFFA0  // yellow — simulated heading
 #define TFT_RDR_NORM    0x07FF  // cyan
 #define TFT_RDR_EXT     0xF800  // red
 #define TFT_ALARM       0xF800  // red
 #define TFT_ALARM_WARN  0xFB20  // orange
-#define TFT_TRG         0x07E0  // green
+#define TFT_TRG         0x07E0  // green — starboard turn
+#define TFT_TRG_PORT    0xC800  // red — port turn
+#define TFT_TRG_ON      0x07FF  // cyan — at course (matches heading)
 #define TFT_BTN_AP      0x4002  // dark red
+#define TFT_BTN_AP_HI   0xD000  // bright red (active AP mode)
 #define TFT_BTN_ADJ     TFT_BTN_NAV
 #define TFT_BTN_NAV     0x008C  // dark blue
 #define TFT_BTN_FLUXSIM    0xD640  // yellow (active)
@@ -384,11 +389,13 @@ static void invalidateBands() {
 #define TFT_LOG_SEP_HI 0xE5B8  // bright mauve (counter on hl)
 #define TFT_LOG_TS_HI  0x7EFC  // bright steel blue (ts on hl)
 #define TFT_LOG_HX_HI  0x87C0  // bright sage green (hex on hl)
+#define TFT_LOG_DESC_TX 0xD400  // muted orange (TX)
+#define TFT_LOG_HI_TX   0xFD40  // bright orange (TX newest)
 
 // --- Touchscreen buttons ---
 // Convention: when adding a button here, also add a <button> in handleRoot() HTML
 // with the same api= value and onclick handler. Layout must match between both.
-#define NUM_BUTTONS 13
+#define NUM_BUTTONS 14
 struct ButtonDef {
     const char *api;
     const char *label;
@@ -404,7 +411,8 @@ static ButtonDef btns[NUM_BUTTONS] = {
     {"plus10",   "+10",   0x08, TFT_BTN_ADJ, 164, 167, 52,  27},
     {"minus10",  "-10",   0x06, TFT_BTN_ADJ, 108, 167, 52,  27},
     {"wind",     "WIND",  0x23, TFT_BTN_NAV, 4,   198, 96,  24},
-    {"fluxsim",     "FLUXSIM",  0xff, TFT_BTN_FLUXSIM,108, 198, 108, 24},
+    {"fluxsim",  "SIM",   0xff, TFT_BTN_FLUXSIM,108, 198, 52,  24},
+    {"fixedhdg", "SET",   0xF9, TFT_BTN_FLUXSIM,164, 198, 52,  24},
     {"track",    "TRACK", 0x28, TFT_BTN_NAV, 220, 198, 96,  24},
     {"hdg_m10",  "-10",   0xFE, TFT_BTN_FLUXSIM, 4,  198, 48, 24},
     {"hdg_m1",   "-1",    0xFD, TFT_BTN_FLUXSIM, 52, 198, 48, 24},
@@ -424,7 +432,7 @@ static int seatalkHeading(uint8_t byte1, uint8_t byte2) {
 // Mode display helpers — single source of truth for TFT + JSON
 static const char *modeLabel(int mode) {
     return mode == 2 ? "AUTO" : mode == 4 ? "VANE"
-         : mode == 8 ? "TRACK" : mode == 0 ? "STANDBY" : "MOD";
+         : mode == 8 ? "TRACK" : mode == 0 ? "STANDBY" : "MODE";
 }
 static uint16_t modeColor(int mode) {
     return mode == 2 || mode == 4 || mode == 8 ? TFT_MODE_ACT
@@ -581,7 +589,7 @@ static void sendHeading() {
 
     int8_t rudder = g.rudder;
     uint16_t oldDeg = _hdgDeg;
-    if (_hdgActive && g.mode == 2 && g.rudderValid && rudder >= -30 && rudder <= 30 && rudder != 0) {
+    if (_hdgActive && _hdgAutoDrift && g.rudderValid && rudder >= -30 && rudder <= 30 && rudder != 0) {
         float r = (float)rudder;
         float rate = (fabs(r) / 30.0f) * 3.0f;
         float step = rate * (_hdgInterval / 1000.0f);
@@ -591,9 +599,9 @@ static void sendHeading() {
         while (_hdgFrac <= -1.0f) { _hdgFrac += 1.0f; _hdgDeg = (_hdgDeg + 359) % 360; }
     }
     if (_hdgDeg != oldDeg)
-        _driftFlashIdx = (_hdgDeg > oldDeg || (oldDeg - _hdgDeg) > 180) ? 11 : 10;
+        _driftFlashIdx = (_hdgDeg > oldDeg || (oldDeg - _hdgDeg) > 180) ? 12 : 11;
 
-    uint8_t deg = _hdgDeg % 360;
+    int deg = _hdgDeg % 360;
     uint8_t u = deg / 90;
     uint8_t temp = deg % 90;
     uint8_t vw = temp / 2;
@@ -605,17 +613,23 @@ static void sendHeading() {
     _suppressEchoCmd = 0;
     _lastHdgTx = now;
     char desc[MSG_TEXT_LEN], line[MSG_TEXT_LEN];
-    snprintf(desc, sizeof(desc), "HDG %d TX", deg);
+    snprintf(desc, sizeof(desc), "> HDG %d", deg);
     uint8_t dg[] = {0x9C};
     buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 1, desc);
     g.pushMsg(line);
+    logDatagram(line);
 }
 
 static bool _userCommanded = false;
 static int  _lastUserMode = -1;
 
-static void simHdg_int(uint16_t d) {
-    _hdgDeg = d; _hdgActive = true; _hdgInterval = 250; _lastHdgTx = 0; _hdgFrac = 0; gBtnsDrawn = false;
+static void simHdg_auto(uint16_t d) {
+    _hdgDeg = d; _hdgActive = true; _hdgAutoDrift = true;
+    _hdgInterval = 250; _lastHdgTx = 0; _hdgFrac = 0; gBtnsDrawn = false;
+}
+static void simHdg_fixed(uint16_t d) {
+    _hdgDeg = d; _hdgActive = true; _hdgAutoDrift = false;
+    _hdgInterval = 250; _lastHdgTx = 0; _hdgFrac = 0; gBtnsDrawn = false;
 }
 static void stopHdg_int() {
     _hdgActive = false; _hdgDeg = 0; _hdgFrac = 0; gBtnsDrawn = false;
@@ -629,12 +643,12 @@ static void pressAutopilotButton(const struct ButtonDef &b) {
     bool ok = sendDatagram(dg, 4);
     _suppressEchoCmd = 0;
     if (ok) {
-        snprintf(desc, sizeof(desc), "%s TX", b.label);
+        snprintf(desc, sizeof(desc), "> %s", b.label);
         if (b.cmd == 0x01) _lastUserMode = 2;
         if (b.cmd == 0x02) _lastUserMode = 0;
         _userCommanded = true;
     } else {
-        snprintf(desc, sizeof(desc), "%s FAIL TX", b.label);
+        snprintf(desc, sizeof(desc), "> %s FAIL", b.label);
     }
     buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 4, desc);
     g.pushMsg(line);
@@ -792,6 +806,7 @@ static void processByte(uint8_t b) {
                 if (_userCommanded && g.mode == 0 && _lastUserMode == 2) {
                     buildLogLine(line, MSG_TEXT_LEN, millis(), buf, msgLen, "AP FAULTED TO STBY");
                     g.pushMsg(line);
+                    logDatagram(line);
                     _userCommanded = false;
                 }
                 if (g.mode == 2) _userCommanded = false;
@@ -889,9 +904,19 @@ static void drawAllButtons() {
             continue;
         if (_hdgActive && (b.cmd == 0x23 || b.cmd == 0x28))
             continue;
-        uint16_t c = (b.cmd == 0xff)
-            ? (_hdgActive ? TFT_BTN_FLUXSIM : TFT_BTN_FLUXSIM_DIM)
-            : b.color;
+        uint16_t c;
+        if (b.cmd == 0xff)
+            c = (_hdgActive && _hdgAutoDrift) ? TFT_BTN_FLUXSIM : TFT_BTN_FLUXSIM_DIM;
+        else if (b.cmd == 0xF9)
+            c = (_hdgActive && !_hdgAutoDrift) ? TFT_BTN_FLUXSIM : TFT_BTN_FLUXSIM_DIM;
+        else if (strcmp(b.api, "auto") == 0 && g.mode == 2)
+            c = TFT_BTN_AP_HI;
+        else if (strcmp(b.api, "standby") == 0 && g.mode == 0)
+            c = TFT_BTN_AP_HI;
+        else if (_hdgActive && (b.cmd == 0xFE || b.cmd == 0xFD || b.cmd == 0xFC || b.cmd == 0xFB))
+            c = TFT_BTN_FLUXSIM_DIM;
+        else
+            c = b.color;
         tft.fillRect(b.x, b.y, b.w, b.h, c);
         tft.drawRect(b.x, b.y, b.w, b.h, TFT_DARKGREY);
         tft.setTextColor(TFT_WHITE, c);
@@ -991,13 +1016,14 @@ static void drawWidgets() {
             break;
         }
         case W_HEADING: {
+            uint16_t hdgColor = _hdgActive ? TFT_HDG_SIM : TFT_HDG;
             if (g.heading >= 0) {
                 char buf[8];
                 snprintf(buf, sizeof(buf), "%d", g.heading);
-                drawBandText(buf, BAND[W_HEADING], 7, TFT_HDG, gBand[W_HEADING]);
+                drawBandText(buf, BAND[W_HEADING], 7, hdgColor, gBand[W_HEADING]);
             } else {
                 gBand[W_HEADING].valid = false;
-                drawBandText("HDG", BAND[W_HEADING], 2, TFT_HDG, gBand[W_HEADING]);
+                drawBandText("HDG", BAND[W_HEADING], 7, hdgColor, gBand[W_HEADING]);
             }
             break;
         }
@@ -1079,14 +1105,35 @@ static void drawWidgets() {
         }
         case W_TARGET: {
             char buf[12] = "TRG";
-            if (g.mode >= 2 && g.targetHeading >= 0)
-                snprintf(buf, sizeof(buf), "TRG %d", g.targetHeading);
-            drawBandText(buf, BAND[W_TARGET], 2, TFT_TRG, gBand[W_TARGET]);
+            uint16_t color = TFT_TRG;
+            if (g.mode >= 2 && g.targetHeading >= 0 && g.heading >= 0) {
+                int diff = (g.targetHeading - g.heading + 540) % 360 - 180;
+                if (abs(diff) <= 3) {
+                    snprintf(buf, sizeof(buf), "%d", g.targetHeading);
+                    color = TFT_TRG_ON;
+                } else if (g.turnDirection == 2) {
+                    snprintf(buf, sizeof(buf), "> %d", g.targetHeading);
+                    color = TFT_TRG;
+                } else {
+                    snprintf(buf, sizeof(buf), "< %d", g.targetHeading);
+                    color = TFT_TRG_PORT;
+                }
+            } else if (g.mode >= 2 && g.targetHeading >= 0) {
+                snprintf(buf, sizeof(buf), "%c %d",
+                         g.turnDirection == 2 ? '>' : '<',
+                         g.targetHeading);
+            }
+            drawBandText(buf, BAND[W_TARGET], 2, color, gBand[W_TARGET]);
             break;
         }
-        case W_BTNS:
-            if (!gBtnsDrawn) drawAllButtons();
+        case W_BTNS: {
+            static int lastMode = -1;
+            if (!gBtnsDrawn || g.mode != lastMode) {
+                drawAllButtons();
+                lastMode = g.mode;
+            }
             break;
+        }
         }
     }
 }
@@ -1123,7 +1170,7 @@ static void drawLogView() {
     int total = min(g.msgLogCount, (int)MSG_LOG_SIZE);
 
     const int LINE_H = 13;
-    const int X_CNT = 5, X_TS = 40, X_HX = 100, X_DESC = 230;
+    const int X_CNT = 5, X_TS = 40, X_HX = 85, X_DESC = 210;
     const int HX_MAX_W = X_DESC - X_HX - 4;
     const int TOP = 6;
     const int MAX_VISIBLE = (STATUS_BAND.y - TOP) / LINE_H;
@@ -1153,6 +1200,7 @@ static void drawLogView() {
                 if (firstEncounter) { gNewestSlot = found; firstEncounter = false; }
             } else {
                 gSlots[found].count++;
+                if (gSlots[found].count > 999) gSlots[found].count = 1;
             }
         } else if (gSlotCount < MAX_SLOTS) {
             strcpy(gSlots[gSlotCount].key, curKey);
@@ -1214,7 +1262,9 @@ static void drawLogView() {
         const char *c2 = strrchr(t, ',');
         if (c1 && c2 && c2 > c1) {
             int n = c1 - t;
-            memcpy(buf, t, n); buf[n] = 0;
+            if (n >= 3 && t[2] == ':')
+                { memcpy(buf, t + 3, n - 3); buf[n - 3] = 0; }
+            else { memcpy(buf, t, n); buf[n] = 0; }
             tft.setTextColor(i == gNewestSlot ? TFT_LOG_TS_HI : TFT_LOG_TS);
             tft.drawString(buf, X_TS, y);
 
@@ -1222,7 +1272,7 @@ static void drawLogView() {
             memcpy(buf, c1 + 1, n); buf[n] = 0;
             int hxW = tft.textWidth(buf);
             tft.setTextColor(i == gNewestSlot ? TFT_LOG_HX_HI : TFT_LOG_HX);
-            if (hxW > HX_MAX_W) {
+            if (hxW > HX_MAX_W && drawY + LINE_H * 2 <= STATUS_BAND.y) {
                 int fit = 0;
                 while (fit < n) {
                     char tmp = buf[fit + 1]; buf[fit + 1] = 0;
@@ -1241,8 +1291,11 @@ static void drawLogView() {
                 tft.drawString(buf, X_HX, y);
             }
 
-            tft.setTextColor(i == gNewestSlot ? TFT_LOG_HI : TFT_LOG_DESC);
-            tft.drawString(c2 + 1, X_DESC, y);
+            const char *desc = c2 + 1;
+            bool isTx = (desc[0] == '>' && desc[1] == ' ');
+            tft.setTextColor(i == gNewestSlot ? (isTx ? TFT_LOG_HI_TX : TFT_LOG_HI)
+                                             : (isTx ? TFT_LOG_DESC_TX : TFT_LOG_DESC));
+            tft.drawString(isTx ? desc + 2 : desc, X_DESC, y);
         }
         drawY += LINE_H;
     }
@@ -1809,6 +1862,8 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 .log-ts{display:inline-block;width:8%;color:#6a8ba8;vertical-align:top}
 .log-hx{display:inline-block;width:52%;color:#6a8b6a;vertical-align:top;word-break:break-all}
 .log-desc{display:inline-block;color:#d9a040;vertical-align:top}
+.log-desc-tx{display:inline-block;color:#d97010;vertical-align:top}
+.log-line.latest .log-desc-tx{color:#ff9620;font-weight:bold}
 .mode{font-size:1.2em;font-weight:bold;text-align:center;margin:4px 0 4px 0;min-height:1.2em}
 .hdg{font-size:3.6em;font-weight:bold;text-align:center;color:#0ff;margin:0 0 4px 0;line-height:1.1}
 .trg{font-size:1.4em;font-weight:bold;text-align:center;color:#0f0;margin:0 0 4px 0;display:none}
@@ -1830,12 +1885,14 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 .btns button:active{filter:brightness(1.6)}
 .btns .big{grid-row:span 2;display:flex;align-items:center;justify-content:center}
 .btns .stby{background:#410010}.btns .auto{background:#410010}
+.btns .stby.active,.btns .auto.active{background:#cc0020}
 .btns .adj{background:#001062}.btns .adj10{background:#001062}
 .btns .wind{background:#001062}.btns .track{background:#001062}
 .btns .fluxsim{background:#cca800}
 .btns .fluxsim.dim{background:#555;opacity:.6}
-.btns .hdgadj{background:#cca800}
-.btns .hdgadj.pulse{filter:brightness(1.8)}
+.btns .hdgadj{background:#555;opacity:.6}
+.btns .hdgadj:active{background:#cca800;opacity:1;filter:none}
+.btns .hdgadj.pulse{background:#cca800;opacity:1;filter:brightness(1.8)}
 #frames{background:#111;border:1px solid #222;border-radius:4px;padding:6px 8px;flex:1;overflow-y:auto;font-size:.85em;min-height:1.8em;max-height:45vh}
 .foot{width:100%;text-align:center;margin:3px 0;font-size:.85em}
 .foot a{color:#6a8ba8;text-decoration:none}.foot a:hover{color:#d9a040}
@@ -1857,18 +1914,19 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 <div class="sensors" id="sensors"></div>
 <!-- Button grid — layout must match btns[] array in C++. -->
 <div class="btns" style="grid-template-columns:96fr 52fr 52fr 96fr">
-  <button class="big stby" onclick="apCmd('standby')">STBY</button>
+  <button class="big stby" id="stbybtn" onclick="apCmd('standby')">STBY</button>
   <button class="adj" onclick="apCmd('minus1')">-1&deg;</button>
   <button class="adj" onclick="apCmd('plus1')">+1&deg;</button>
-  <button class="big auto" onclick="apCmd('auto')">AUTO</button>
+  <button class="big auto" id="autobtn" onclick="apCmd('auto')">AUTO</button>
   <button class="adj10" onclick="apCmd('minus10')">-10&deg;</button>
   <button class="adj10" onclick="apCmd('plus10')">+10&deg;</button>
 </div>
-<div class="btns" style="grid-template-columns:48fr 48fr 108fr 48fr 48fr">
+<div class="btns" style="grid-template-columns:48fr 48fr 52fr 52fr 48fr 48fr">
   <button class="wind" id="windbtn" onclick="apCmd('wind')" style="grid-column:span 2">WIND</button>
   <button class="hdgadj" id="hdg_m10" onclick="hdgAdj(-10)" style="display:none">-10</button>
   <button class="hdgadj" id="hdg_m1" onclick="hdgAdj(-1)" style="display:none">-1</button>
-  <button class="fluxsim" id="fluxsimbtn" onclick="simToggle()">FLUXSIM</button>
+  <button class="fluxsim dim" id="simbtn" onclick="simAuto()">SIM</button>
+  <button class="fluxsim dim" id="setbtn" onclick="simFixed()">SET</button>
   <button class="track" id="trackbtn" onclick="apCmd('track')" style="grid-column:span 2">TRACK</button>
   <button class="hdgadj" id="hdg_p1" onclick="hdgAdj(1)" style="display:none">+1</button>
   <button class="hdgadj" id="hdg_p10" onclick="hdgAdj(10)" style="display:none">+10</button>
@@ -1893,16 +1951,32 @@ function simVis(active){
   for(let id of ['hdg_m10','hdg_m1','hdg_p1','hdg_p10'])
     document.getElementById(id).style.display=active?'':'none';
 }
-async function simToggle(){
+async function simAuto(){
   beep();
-  let b=document.getElementById('fluxsimbtn');
-  b.classList.toggle('dim');
-  let active=!b.classList.contains('dim');
-  simVis(active);
-  if(!active){
+  let sim=document.getElementById('simbtn');
+  let active=!sim.classList.contains('dim');
+  simVis(!active);
+  if(active){
     await fetch('/api/heading/stop');
+    sim.classList.add('dim');
   } else {
+    document.getElementById('setbtn').classList.add('dim');
     await fetch('/api/heading?deg='+_lastHdg+'&interval=250');
+    sim.classList.remove('dim');
+  }
+}
+async function simFixed(){
+  beep();
+  let set=document.getElementById('setbtn');
+  let active=!set.classList.contains('dim');
+  simVis(!active);
+  if(active){
+    await fetch('/api/heading/stop');
+    set.classList.add('dim');
+  } else {
+    document.getElementById('simbtn').classList.add('dim');
+    await fetch('/api/heading?deg='+_lastHdg+'&drift=0&interval=250');
+    set.classList.remove('dim');
   }
 }
 function hdgAdj(delta){
@@ -1922,7 +1996,7 @@ function renderWidgets(d){
     for(let w of d.display){
       switch(w.w){
         case 'MODE': mode='<div class="mode" id="mode" style="color:'+(w.c=='yellow'?'#f0f':w.c=='green'?'#0f0':'#f0f')+'">'+w.t+'</div>'; break;
-        case 'HDG': hdg='<div class="hdg" id="hdg">'+(w.t>=0?w.t:'HDG')+'</div>'; if(w.t>=0)_lastHdg=w.t; break;
+        case 'HDG': hdg='<div class="hdg" id="hdg" style="'+(w.sim?'color:#ffa500':'')+'">'+(w.t>=0?w.t:'HDG')+'</div>'; if(w.t>=0)_lastHdg=w.t; break;
         case 'RDR': if(w.num) rdr='<div class="rdr" id="rdr">'+(w.v?w.t:'RDR')+'</div>'; break;
         case 'ALARMS':{
           let sim=w.sim;
@@ -1934,7 +2008,13 @@ function renderWidgets(d){
           }
           break;
         }
-        case 'TRG': if(w.t>=0) trg='<div class="trg" id="trg" style="display:block">\u2192 '+w.t+'\u00B0</div>'; break;
+        case 'TRG': if(w.t>=0){
+          let a='',c='#0f0';
+          if(w.s===3)      { a='';   c='#0ff'; }
+          else if(w.s===1) { a='← '; c='#c00'; }
+          else             { a='→ '; c='#0f0'; }
+          trg='<div class="trg" id="trg" style="display:block;color:'+c+'">'+a+w.t+'\u00B0</div>';
+        } break;
       }
     }
   }
@@ -1955,8 +2035,16 @@ for(let i=-25;i<=25;i+=5){
 function render(d){
   if(paused) return;
   renderWidgets(d);
-  let fb=document.getElementById('fluxsimbtn');
-  for(let w of d.display) if(w.w=='ALARMS'){fb.classList.toggle('dim',!w.sim);simVis(w.sim);}
+  for(let w of d.display) if(w.w=='MODE'){
+    document.getElementById('stbybtn').classList.toggle('active', w.v===0);
+    document.getElementById('autobtn').classList.toggle('active', w.v===2);
+  }
+  let fb=document.getElementById('simbtn'),fixbtn=document.getElementById('setbtn');
+  for(let w of d.display) if(w.w=='ALARMS'){
+    fb.classList.toggle('dim',!(w.sim&&w.drift));
+    fixbtn.classList.toggle('dim',!(w.sim&&!w.drift));
+    simVis(w.sim);
+  }
   // pulse hdg adj buttons when FLUXSIM drift changes heading
   for(let w of d.display) if(w.w=='HDG' && w.t>=0){
     if(_prevHdgPulse >= 0 && w.t != _prevHdgPulse){
@@ -2005,7 +2093,7 @@ function render(d){
         let s=gSlots.get(k);
         if(s){s.c=1;s.t=m;}else gSlots.set(k,{c:1,t:m});
       } else {
-        let s=gSlots.get(k); if(s)s.c++;
+        let s=gSlots.get(k); if(s){s.c++;if(s.c>999)s.c=1;}
       }
     }
     for(let[k,s]of gSlots){
@@ -2025,8 +2113,9 @@ function render(d){
 function logLine(msg,cnt,latest){
   let p=msg.indexOf(','),l=msg.lastIndexOf(',');
   if(p>=0&&l>p){
-    let ts=esc(msg.slice(0,p)),hx=esc(msg.slice(p+1,l)),desc=esc(msg.slice(l+1));
-    return '<div class="log-line'+(latest?' latest':'')+'"><span class="log-cnt">x'+cnt+'</span><span class="log-ts">'+ts+'</span><span class="log-hx">'+hx+'</span><span class="log-desc">'+desc+'</span></div>';
+    let ts=esc(msg.slice(0,p)),hx=esc(msg.slice(p+1,l)),raw=msg.slice(l+1),isTx=raw.startsWith('> ');
+    let desc=esc(isTx?raw.slice(2):raw);
+    return '<div class="log-line'+(latest?' latest':'')+'"><span class="log-cnt">x'+cnt+'</span><span class="log-ts">'+ts+'</span><span class="log-hx">'+hx+'</span><span class="log-'+(isTx?'desc-tx':'desc')+'">'+desc+'</span></div>';
   }
   return '<div class="log-line'+(latest?' latest':'')+'"><span class="log-cnt">x'+cnt+'</span><span class="log-ts">--</span><span class="log-hx">--</span><span class="log-desc">'+esc(msg)+'</span></div>';
 }
@@ -2136,10 +2225,11 @@ static void handleStatus() {
             json += modeLabel(g.mode);
             json += "\",\"c\":\"";
             json += modeColorName(g.mode);
-            json += "\"}";
+            json += "\",\"v\":" + String(g.mode) + "}";
             break;
         case W_HEADING:
-            json += "{\"w\":\"HDG\",\"t\":" + String(g.heading) + "}";
+            json += "{\"w\":\"HDG\",\"t\":" + String(g.heading)
+                 + ",\"sim\":" + String(_hdgActive ? "true" : "false") + "}";
             break;
         case W_RUDDER:
             json += "{\"w\":\"RDR\",\"t\":" + String(g.rudderValid ? g.rudder : -1)
@@ -2153,12 +2243,23 @@ static void handleStatus() {
             if (apRecent && g.windShift)   { if (!fa) json += ","; json += "\"WIND SHIFT\""; fa = false; }
             if (apRecent && g.largeXTE)    { if (!fa) json += ","; json += "\"LARGE XTE\""; fa = false; }
             if (apRecent && g.noData)      { if (!fa) json += ","; json += "\"NO DATA\""; fa = false; }
-            json += "],\"sim\":" + String(_hdgActive ? "true" : "false") + "}";
+            json += "],\"sim\":" + String(_hdgActive ? "true" : "false")
+                 + ",\"drift\":" + String(_hdgAutoDrift ? "true" : "false") + "}";
             break;
         }
-        case W_TARGET:
-            json += "{\"w\":\"TRG\",\"t\":" + String((g.mode >= 2 && g.targetHeading >= 0) ? g.targetHeading : -1) + "}";
+        case W_TARGET: {
+            int s = 0;
+            if (g.mode >= 2 && g.targetHeading >= 0) {
+                if (g.heading >= 0) {
+                    int diff = (g.targetHeading - g.heading + 540) % 360 - 180;
+                    if (abs(diff) <= 3) s = 3;
+                    else s = g.turnDirection == 2 ? 2 : 1;
+                } else s = g.turnDirection;
+            }
+            json += "{\"w\":\"TRG\",\"t\":" + String((g.mode >= 2 && g.targetHeading >= 0) ? g.targetHeading : -1)
+                 + ",\"s\":" + String(s) + "}";
             break;
+        }
         }
     }
     json += "],";
@@ -2189,11 +2290,12 @@ static void setupWebServer() {
             _hdgInterval = constrain(interval.toInt(), 200, 10000);
         _hdgDeg = h;
         _hdgActive = true;
+        _hdgAutoDrift = (server.arg("drift") != "0");
         _lastHdgTx = 0;
         _hdgFrac = 0;
         gBtnsDrawn = false;
         char desc[MSG_TEXT_LEN], line[MSG_TEXT_LEN];
-        snprintf(desc, sizeof(desc), "HDG %d TX", h);
+        snprintf(desc, sizeof(desc), "> HDG %d", h);
         uint8_t dg[] = {0x9C};
         buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 1, desc);
         g.pushMsg(line);
@@ -2216,7 +2318,7 @@ static void setupWebServer() {
         _hdgFrac = 0;
         gBtnsDrawn = false;
         char desc[MSG_TEXT_LEN], line[MSG_TEXT_LEN];
-        snprintf(desc, sizeof(desc), "HDG %d TX", _hdgDeg);
+        snprintf(desc, sizeof(desc), "> HDG %d", _hdgDeg);
         uint8_t dg[] = {0x9C};
         buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 1, desc);
         g.pushMsg(line);
@@ -2238,7 +2340,7 @@ static void setupWebServer() {
             uint8_t dg[] = {0x86, 0x21, 0x23, 0xDC};
             if (sendDatagram(dg, 4)) {
                 char line[MSG_TEXT_LEN];
-                buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 4, "WIND TX");
+                buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 4, "> WIND");
                 g.pushMsg(line);
                 logDatagram(line);
                 server.send(200, "application/json", "{\"status\":\"ok\",\"cmd\":\"WIND\"}");
@@ -2251,7 +2353,7 @@ static void setupWebServer() {
             uint8_t dg[] = {0x86, 0x21, 0x28, 0xD7};
             if (sendDatagram(dg, 4)) {
                 char line[MSG_TEXT_LEN];
-                buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 4, "TRACK TX");
+                buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 4, "> TRACK");
                 g.pushMsg(line);
                 logDatagram(line);
                 server.send(200, "application/json", "{\"status\":\"ok\",\"cmd\":\"TRACK\"}");
@@ -2518,8 +2620,11 @@ void loop() {
                         flashButton(i);
                         lastBtnPress = now;
                         if (b.cmd == 0xff) {
-                            if (_hdgActive) stopHdg_int();
-                            else simHdg_int(g.heading >= 0 ? g.heading : 180);
+                            if (_hdgActive && _hdgAutoDrift) stopHdg_int();
+                            else simHdg_auto(g.heading >= 0 ? g.heading : 180);
+                        } else if (b.cmd == 0xF9) {
+                            if (_hdgActive && !_hdgAutoDrift) stopHdg_int();
+                            else simHdg_fixed(g.heading >= 0 ? g.heading : 180);
                         } else if (b.cmd == 0xFE) {
                             _hdgDeg = (_hdgDeg + 350) % 360; _hdgFrac = 0; gBtnsDrawn = false;
                         } else if (b.cmd == 0xFD) {
