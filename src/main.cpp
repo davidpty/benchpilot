@@ -328,7 +328,7 @@ static const Band BAND[W_END] = {
 static const Band STATUS_BAND = { 228, 12 };  // bottom status bar, font1
 
 // --- Render-state cache — dirty-checking for flicker-free redraws ---
-struct BandState { char text[56]; int16_t w; bool valid; };
+struct BandState { char text[56]; int16_t w; uint16_t color; bool valid; };
 static BandState gBand[W_END];
 static BandState gStatusBand;
 static bool gBtnsDrawn = false;
@@ -614,8 +614,7 @@ static void sendHeading() {
     _lastHdgTx = now;
     char desc[MSG_TEXT_LEN], line[MSG_TEXT_LEN];
     snprintf(desc, sizeof(desc), "> HDG %d", deg);
-    uint8_t dg[] = {0x9C};
-    buildLogLine(line, MSG_TEXT_LEN, millis(), dg, 1, desc);
+    buildLogLine(line, MSG_TEXT_LEN, millis(), msg, 5, desc);
     g.pushMsg(line);
     logDatagram(line);
 }
@@ -957,7 +956,7 @@ static void eraseBandSides(const Band &b, int oldW, int newW) {
 // Only when the new text is narrower are the old side strips erased.
 static void drawBandText(const char *s, const Band &b, uint8_t font, uint16_t fg,
                          BandState &st) {
-    if (st.valid && strcmp(s, st.text) == 0) return;
+    if (st.valid && strcmp(s, st.text) == 0 && fg == st.color) return;
     tft.setTextFont(font);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(fg, TFT_BLACK);
@@ -971,6 +970,7 @@ static void drawBandText(const char *s, const Band &b, uint8_t font, uint16_t fg
     strncpy(st.text, s, sizeof(st.text) - 1);
     st.text[sizeof(st.text) - 1] = 0;
     st.w = w;
+    st.color = fg;
     st.valid = true;
 }
 
@@ -2190,6 +2190,13 @@ static void handleStatus() {
     json += "\"active\":" + String(active ? "true" : "false") + ",";
     json += "\"rudder\":" + String(g.rudder) + ",";
     json += "\"rudder_valid\":" + String(g.rudderValid ? "true" : "false") + ",";
+    json += "\"dt\":" + String(dt) + ",";
+    json += "\"turn_dir\":" + String(g.turnDirection) + ",";
+    json += "\"failure_code\":" + String(g.failureCode) + ",";
+    json += "\"ap_age_ms\":" + String(now - g.apUpdated) + ",";
+    json += "\"hdg_deg\":" + String(_hdgDeg) + ",";
+    json += "\"hdg_active\":" + String(_hdgActive ? "true" : "false") + ",";
+    json += "\"sd_active\":" + String(logFile ? "true" : "false") + ",";
 
     // Sensors
     auto valid = [](unsigned long t) { return millis() - t < g.SENSOR_TIMEOUT; };
