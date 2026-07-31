@@ -1835,7 +1835,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 #frames{background:#111;border:1px solid #222;border-radius:4px;padding:6px 8px;flex:1;overflow-y:auto;font-size:.85em;min-height:1.8em;max-height:45vh}
 .foot{width:100%;text-align:center;margin:3px 0;font-size:.85em}
 .foot a{color:#6a8ba8;text-decoration:none}.foot a:hover{color:#d9a040}
-.foot span{color:#444;margin:0 4px}
+.foot span{color:#444;margin:0 4px}#fl{text-align:left}#fr{text-align:right}
 </style>
 </head>
 <body>
@@ -2053,7 +2053,7 @@ function setFooter(l,c,r){
 }
 function showLive(){ paused=false; setFooter(null,'<a href="#" onclick="showLive();return false" style="color:#d9a040">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false">logs</a>',null); poll(); }
 async function showLogFiles(){
-  paused=true; setFooter('<a href="#" onclick="showLive();return false" style="color:#6a8ba8">\u2190</a>','<a href="#" onclick="showLive();return false">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false" style="color:#d9a040">logs</a>','<span style="float:right"><a href="#" onclick="delLogs();return false" style="color:#6a8ba8">delete all logs</a></span>');
+  paused=true; setFooter('<a href="#" onclick="showLive();return false" style="color:#6a8ba8">\u2190</a>','<a href="#" onclick="showLive();return false">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false" style="color:#d9a040">logs</a>','<a href="#" onclick="delLogs();return false" style="color:#6a8ba8">delete all logs</a>');
   let r=await fetch('/api/files'),files=await r.json();
   files.sort((a,b)=>b.name.localeCompare(a.name));
   let h='';
