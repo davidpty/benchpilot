@@ -991,10 +991,14 @@ static void drawWidgets() {
             break;
         }
         case W_HEADING: {
-            char buf[8];
-            if (g.heading >= 0) snprintf(buf, sizeof(buf), "%d", g.heading);
-            else                strcpy(buf, "HDG");
-            drawBandText(buf, BAND[W_HEADING], 7, TFT_HDG, gBand[W_HEADING]);
+            if (g.heading >= 0) {
+                char buf[8];
+                snprintf(buf, sizeof(buf), "%d", g.heading);
+                drawBandText(buf, BAND[W_HEADING], 7, TFT_HDG, gBand[W_HEADING]);
+            } else {
+                gBand[W_HEADING].valid = false;
+                drawBandText("HDG", BAND[W_HEADING], 2, TFT_HDG, gBand[W_HEADING]);
+            }
             break;
         }
         case W_RUDDER: {
