@@ -424,7 +424,7 @@ static int seatalkHeading(uint8_t byte1, uint8_t byte2) {
 // Mode display helpers — single source of truth for TFT + JSON
 static const char *modeLabel(int mode) {
     return mode == 2 ? "AUTO" : mode == 4 ? "VANE"
-         : mode == 8 ? "TRACK" : mode == 0 ? "STANDBY" : "---";
+         : mode == 8 ? "TRACK" : mode == 0 ? "STANDBY" : "MOD";
 }
 static uint16_t modeColor(int mode) {
     return mode == 2 || mode == 4 || mode == 8 ? TFT_MODE_ACT
@@ -650,7 +650,7 @@ static void parseHeadingCommon(const uint8_t *buf, uint8_t msgLen, unsigned long
     int deg = seatalkHeading(buf[1], buf[2]);
     if (buf[0] == 0x53) { g.cog = deg; g.sensorSeen[SI_COG] = now; }
     else g.heading = deg;
-    snprintf(desc, MSG_TEXT_LEN, "Hdg %d", deg);
+    snprintf(desc, MSG_TEXT_LEN, "HDG %d", deg);
 }
 static void parse0x84(const uint8_t *buf, uint8_t msgLen, unsigned long now, char *desc) {
     int deg = seatalkHeading(buf[1], buf[2]);
@@ -666,7 +666,7 @@ static void parse0x84(const uint8_t *buf, uint8_t msgLen, unsigned long now, cha
     g.noData      = buf[7] & 0x08;
     g.autoRelease = buf[7] & 0x80;
     g.apUpdated = now;
-    snprintf(desc, MSG_TEXT_LEN, "Hdg %d Trg %d Rdr %d", deg, g.targetHeading, g.rudder);
+    snprintf(desc, MSG_TEXT_LEN, "HDG %d TRG %d RDR %d", deg, g.targetHeading, g.rudder);
 }
 static void parse0x9C(const uint8_t *buf, uint8_t msgLen, unsigned long now, char *desc) {
     int deg = seatalkHeading(buf[1], buf[2]);
@@ -674,7 +674,7 @@ static void parse0x9C(const uint8_t *buf, uint8_t msgLen, unsigned long now, cha
     g.last9cMs = now;
     g.rudder = (int8_t)buf[3];
     g.rudderValid = true;
-    snprintf(desc, MSG_TEXT_LEN, "Hdg %d Rdr %d", deg, g.rudder);
+    snprintf(desc, MSG_TEXT_LEN, "HDG %d RDR %d", deg, g.rudder);
 }
 static void parse0x10(const uint8_t *buf, uint8_t msgLen, unsigned long now, char *desc) {
     if (buf[1] == 0x01 && msgLen >= 4) {
@@ -686,7 +686,7 @@ static void parse0x10(const uint8_t *buf, uint8_t msgLen, unsigned long now, cha
     }
 }
 static void parse0x90(const uint8_t *buf, uint8_t msgLen, unsigned long now, char *desc) {
-    snprintf(desc, MSG_TEXT_LEN, "Sys %d", buf[1] & 0x7F);
+    snprintf(desc, MSG_TEXT_LEN, "SYS %d", buf[1] & 0x7F);
 }
 static void parse0x83(const uint8_t *buf, uint8_t msgLen, unsigned long now, char *desc) {
     g.failureCode = buf[2];
@@ -695,7 +695,7 @@ static void parse0x83(const uint8_t *buf, uint8_t msgLen, unsigned long now, cha
 static void parse0x00(const uint8_t *buf, uint8_t msgLen, unsigned long now, char *desc) {
     g.depth = ((buf[3] << 8) | buf[4]);
     g.sensorSeen[SI_DEPTH] = now;
-    snprintf(desc, MSG_TEXT_LEN, "Dpt %d", g.depth);
+    snprintf(desc, MSG_TEXT_LEN, "DPT %d", g.depth);
 }
 static void parse0x11(const uint8_t *buf, uint8_t msgLen, unsigned long now, char *desc) {
     g.windSpeed = ((buf[2] << 8) | buf[3]);
@@ -715,7 +715,7 @@ static void parse0x52(const uint8_t *buf, uint8_t msgLen, unsigned long now, cha
 static void parse0x23(const uint8_t *buf, uint8_t msgLen, unsigned long now, char *desc) {
     g.waterTemp = buf[2];
     g.sensorSeen[SI_WATER_TEMP] = now;
-    snprintf(desc, MSG_TEXT_LEN, "Temp %d", g.waterTemp);
+    snprintf(desc, MSG_TEXT_LEN, "TEMP %d", g.waterTemp);
 }
 static void parse0x50(const uint8_t *buf, uint8_t msgLen, unsigned long now, char *desc) {
     g.gpsLatDeg = buf[2];
@@ -786,11 +786,11 @@ static void processByte(uint8_t b) {
                 if (c.cmd == cmd && msgLen >= c.minLen) { match = &c; break; }
             }
             if (match) match->parse(buf, msgLen, now, desc);
-            else snprintf(desc, sizeof(desc), "datagram");
+            else snprintf(desc, sizeof(desc), "DATAGRAM");
 
             if (cmd == 0x84) {
                 if (_userCommanded && g.mode == 0 && _lastUserMode == 2) {
-                    buildLogLine(line, MSG_TEXT_LEN, millis(), buf, msgLen, "AP faulted to STBY");
+                    buildLogLine(line, MSG_TEXT_LEN, millis(), buf, msgLen, "AP FAULTED TO STBY");
                     g.pushMsg(line);
                     _userCommanded = false;
                 }
@@ -993,7 +993,7 @@ static void drawWidgets() {
         case W_HEADING: {
             char buf[8];
             if (g.heading >= 0) snprintf(buf, sizeof(buf), "%d", g.heading);
-            else                strcpy(buf, "---");
+            else                strcpy(buf, "HDG");
             drawBandText(buf, BAND[W_HEADING], 7, TFT_HDG, gBand[W_HEADING]);
             break;
         }
@@ -1048,7 +1048,7 @@ static void drawWidgets() {
             // Grey-bordered box aligned with the first ticks (±25px), outline height
             char buf[5];
             if (g.rudderValid) snprintf(buf, sizeof(buf), "%d", val);
-            else               strcpy(buf, "---");
+            else               strcpy(buf, "RDR");
             tft.setTextFont(2);
             tft.setTextDatum(MC_DATUM);
             int numW = tft.textWidth(buf);
@@ -1074,7 +1074,7 @@ static void drawWidgets() {
             break;
         }
         case W_TARGET: {
-            char buf[12] = "";
+            char buf[12] = "TRG";
             if (g.mode >= 2 && g.targetHeading >= 0)
                 snprintf(buf, sizeof(buf), "TRG %d", g.targetHeading);
             drawBandText(buf, BAND[W_TARGET], 2, TFT_TRG, gBand[W_TARGET]);
@@ -1088,13 +1088,13 @@ static void drawWidgets() {
 }
 
 static void msgKey(const char *msg, char *key, int keyLen) {
-    const char *c1 = strchr(msg, ',');
+    const char *c1 = strrchr(msg, ',');
     const char *body = c1 ? c1 + 1 : msg;
     int ki = 0;
     bool lastSpace = true;
     for (; *body && ki < keyLen - 1; body++) {
         char ch = *body;
-        if (ch >= '0' && ch <= '9') continue;
+        if ((ch >= '0' && ch <= '9') || ch == '-') continue;
         if (ch == ' ') { if (lastSpace) continue; lastSpace = true; }
         else lastSpace = false;
         key[ki++] = ch;
@@ -1119,7 +1119,7 @@ static void drawLogView() {
     int total = min(g.msgLogCount, (int)MSG_LOG_SIZE);
 
     const int LINE_H = 13;
-    const int X_CNT = 2, X_TS = 50, X_HX = 110, X_DESC = 212;
+    const int X_CNT = 5, X_TS = 40, X_HX = 100, X_DESC = 230;
     const int HX_MAX_W = X_DESC - X_HX - 4;
     const int TOP = 6;
     const int MAX_VISIBLE = (STATUS_BAND.y - TOP) / LINE_H;
@@ -1231,7 +1231,7 @@ static void drawLogView() {
                 int y2 = y + LINE_H;
                 int barY2 = y2 - LINE_H/2;
                 tft.fillRect(0, barY2, 320, LINE_H, rowBg);
-                tft.drawString(buf + fit, X_HX, y2);
+                tft.drawString(buf + fit, X_HX + 8, y2);
                 drawY += LINE_H;
             } else {
                 tft.drawString(buf, X_HX, y);
@@ -1801,10 +1801,10 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 .log-line{white-space:pre-wrap;font-size:.85em;line-height:1.5;padding:1px 0}
 .log-line.latest{background:#332200}
 .log-line.latest .log-desc{color:#fda;font-weight:bold}
-.log-cnt{display:inline-block;width:5ch;color:#7a6a7a}
-.log-ts{display:inline-block;width:9ch;color:#6a8ba8}
-.log-hx{display:inline-block;width:22ch;color:#6a8b6a;word-break:break-all}
-.log-desc{display:inline-block;color:#d9a040}
+.log-cnt{display:inline-block;width:5%;color:#7a6a7a;vertical-align:top}
+.log-ts{display:inline-block;width:8%;color:#6a8ba8;vertical-align:top}
+.log-hx{display:inline-block;width:52%;color:#6a8b6a;vertical-align:top;word-break:break-all}
+.log-desc{display:inline-block;color:#d9a040;vertical-align:top}
 .mode{font-size:1.2em;font-weight:bold;text-align:center;margin:4px 0 4px 0;min-height:1.2em}
 .hdg{font-size:3.6em;font-weight:bold;text-align:center;color:#0ff;margin:0 0 4px 0;line-height:1.1}
 .trg{font-size:1.4em;font-weight:bold;text-align:center;color:#0f0;margin:0 0 4px 0;display:none}
@@ -1842,9 +1842,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 
 <div class="wrap">
 
-<div class="mode" id="mode">---</div>
-<div class="hdg" id="hdg">--</div>
-<div class="trg" id="trg">--</div>
+<div class="mode" id="mode">MOD</div>
+<div class="hdg" id="hdg">HDG</div>
+<div class="trg" id="trg">TRG</div>
 <div class="alarms" id="alarms"></div>
 <div class="rdrbar" id="rdrbar">
   <div class="rdrfill" id="rdrfill" style="display:none"></div>
@@ -1870,7 +1870,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
   <button class="hdgadj" id="hdg_p10" onclick="hdgAdj(10)" style="display:none">+10</button>
 </div>
 <div class="foot" style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center"><span id="fl"></span><span id="fc"><a href="#" onclick="showLive();return false" style="color:#d9a040">live</a><span style="color:#444">|</span><a href="#" onclick="showLogFiles();return false">logs</a></span><span id="fr"></span></div>
-<div id="frames">--</div>
+<div id="frames">LOG</div>
 <script>
 function beep(){
   try{
@@ -1918,8 +1918,8 @@ function renderWidgets(d){
     for(let w of d.display){
       switch(w.w){
         case 'MODE': mode='<div class="mode" id="mode" style="color:'+(w.c=='yellow'?'#f0f':w.c=='green'?'#0f0':'#f0f')+'">'+w.t+'</div>'; break;
-        case 'HDG': hdg='<div class="hdg" id="hdg">'+(w.t>=0?w.t:'---')+'</div>'; if(w.t>=0)_lastHdg=w.t; break;
-        case 'RDR': if(w.num) rdr='<div class="rdr" id="rdr">'+(w.v?w.t:'--')+'</div>'; break;
+        case 'HDG': hdg='<div class="hdg" id="hdg">'+(w.t>=0?w.t:'HDG')+'</div>'; if(w.t>=0)_lastHdg=w.t; break;
+        case 'RDR': if(w.num) rdr='<div class="rdr" id="rdr">'+(w.v?w.t:'RDR')+'</div>'; break;
         case 'ALARMS':{
           let sim=w.sim;
           if(w.a&&w.a.length){
@@ -1934,10 +1934,10 @@ function renderWidgets(d){
       }
     }
   }
-  document.getElementById('mode').outerHTML=mode||'<div class="mode" id="mode">---</div>';
-  document.getElementById('hdg').outerHTML=hdg||'<div class="hdg" id="hdg">--</div>';
+  document.getElementById('mode').outerHTML=mode||'<div class="mode" id="mode">MOD</div>';
+  document.getElementById('hdg').outerHTML=hdg||'<div class="hdg" id="hdg">HDG</div>';
   document.getElementById('alarms').innerHTML=alhs;
-  document.getElementById('trg').outerHTML=trg||'<div class="trg" id="trg">--</div>';
+  document.getElementById('trg').outerHTML=trg||'<div class="trg" id="trg">TRG</div>';
 }
 // 1 tick every 5° — 5 sections per side, painted over the fill (mirrors CYD)
 let rdrbar=document.getElementById('rdrbar'), rdrnumEl=document.getElementById('rdrnum');
@@ -1973,7 +1973,7 @@ function render(d){
     rdrnumEl.textContent=r;
   } else {
     rf.style.display='none';
-    rdrnumEl.textContent='---';
+    rdrnumEl.textContent='RDR';
   }
   rdrnumEl.style.display='block';
   // sensors
@@ -1993,8 +1993,8 @@ function render(d){
   if(d.msgs&&d.msgs.length){
     let seen=new Set(), newestKey='';
     for(let m of d.msgs){
-      let p=m.indexOf(','),body=p>=0?m.slice(p+1):m;
-      let k=body.replace(/\d/g,'').replace(/\s+/g,' ').trim();
+      let p=m.lastIndexOf(','),body=p>=0?m.slice(p+1):m;
+      let k=body.replace(/[-\d]/g,'').replace(/\s+/g,' ').trim();
       if(!seen.has(k)){
         seen.add(k);
         if(!newestKey) newestKey=k;
@@ -2010,7 +2010,7 @@ function render(d){
     }
     if(newestKey&&newestKey!==_newestKey){
       _newestKey=newestKey;
-      try{let a=new AudioContext(),o=a.createOscillator();o.type='square';o.frequency.value=1200;o.connect(a.destination);o.start();o.stop(a.currentTime+0.015);}catch(e){}
+      try{let a=new AudioContext(),o=a.createOscillator(),g=a.createGain();o.type='square';o.frequency.value=1200;g.gain.setValueAtTime(0.07,a.currentTime);g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+0.015);o.connect(g).connect(a.destination);o.start();o.stop(a.currentTime+0.015);}catch(e){}
     }
   }
   let frames=document.getElementById('frames');
