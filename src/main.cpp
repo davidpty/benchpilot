@@ -1321,7 +1321,7 @@ static void drawLogView() {
                     int barYd = yd - LINE_H/2;
                     tft.fillRect(0, barYd, 320, LINE_H, rowBg);
                 }
-                snprintf(buf, sizeof(buf), "  %s", rest);
+                snprintf(buf, sizeof(buf), " %s", rest);
                 tft.drawString(buf, X_DESC, yd);
                 if (!hexWrapped) drawY += LINE_H;
             } else {
