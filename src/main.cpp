@@ -1316,6 +1316,7 @@ static void drawLogView() {
                 tft.drawString(descDisp, X_DESC, y);
                 descDisp[fit] = saved;
                 char *rest = descDisp + fit;
+                while (*rest == ' ') rest++;
                 int yd = y + LINE_H;
                 if (!hexWrapped) {
                     int barYd = yd - LINE_H/2;
