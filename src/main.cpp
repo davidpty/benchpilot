@@ -1170,7 +1170,7 @@ static void drawLogView() {
     int total = min(g.msgLogCount, (int)MSG_LOG_SIZE);
 
     const int LINE_H = 13;
-    const int X_CNT = 5, X_TS = 40, X_HX = 85, X_DESC = 210;
+    const int X_CNT = 5, X_TS = 40, X_HX = 80, X_DESC = 200;
     const int HX_MAX_W = X_DESC - X_HX - 4;
     const int TOP = 6;
     const int MAX_VISIBLE = (STATUS_BAND.y - TOP) / LINE_H;
@@ -1253,13 +1253,13 @@ static void drawLogView() {
         int barY = y - LINE_H/2;
         tft.fillRect(0, barY, 320, LINE_H, rowBg);
 
-        snprintf(buf, sizeof(buf), "x%d", gSlots[i].count);
+        snprintf(buf, sizeof(buf), "%03d", gSlots[i].count);
         tft.setTextColor(i == gNewestSlot ? TFT_LOG_SEP_HI : TFT_LOG_SEP);
         tft.drawString(buf, X_CNT, y);
 
-        const char *t = gSlots[i].text;
-        const char *c1 = strchr(t, ',');
-        const char *c2 = strrchr(t, ',');
+        char *t = gSlots[i].text;
+        char *c1 = strchr(t, ',');
+        char *c2 = strrchr(t, ',');
         if (c1 && c2 && c2 > c1) {
             int n = c1 - t;
             if (n >= 3 && t[2] == ':')
@@ -1272,6 +1272,7 @@ static void drawLogView() {
             memcpy(buf, c1 + 1, n); buf[n] = 0;
             int hxW = tft.textWidth(buf);
             tft.setTextColor(i == gNewestSlot ? TFT_LOG_HX_HI : TFT_LOG_HX);
+            bool hexWrapped = false;
             if (hxW > HX_MAX_W && drawY + LINE_H * 2 <= STATUS_BAND.y) {
                 int fit = 0;
                 while (fit < n) {
@@ -1287,15 +1288,37 @@ static void drawLogView() {
                 tft.fillRect(0, barY2, 320, LINE_H, rowBg);
                 tft.drawString(buf + fit, X_HX + 8, y2);
                 drawY += LINE_H;
+                hexWrapped = true;
             } else {
                 tft.drawString(buf, X_HX, y);
             }
 
-            const char *desc = c2 + 1;
+            char *desc = c2 + 1;
             bool isTx = (desc[0] == '>' && desc[1] == ' ');
-            tft.setTextColor(i == gNewestSlot ? (isTx ? TFT_LOG_HI_TX : TFT_LOG_HI)
-                                             : (isTx ? TFT_LOG_DESC_TX : TFT_LOG_DESC));
-            tft.drawString(isTx ? desc + 2 : desc, X_DESC, y);
+            char *descDisp = isTx ? desc + 2 : desc;
+            int descMax = 320 - X_DESC;
+            int descW = tft.textWidth(descDisp);
+            uint16_t descColor = i == gNewestSlot ? (isTx ? TFT_LOG_HI_TX : TFT_LOG_HI)
+                                                  : (isTx ? TFT_LOG_DESC_TX : TFT_LOG_DESC);
+            tft.setTextColor(descColor);
+            if (descW > descMax) {
+                int fit = (int)strlen(descDisp);
+                while (fit > 0) {
+                    char tmp = descDisp[fit]; descDisp[fit] = 0;
+                    if (tft.textWidth(descDisp) <= descMax) { descDisp[fit] = tmp; break; }
+                    descDisp[fit] = tmp; fit--;
+                }
+                char saved = descDisp[fit]; descDisp[fit] = 0;
+                tft.drawString(descDisp, X_DESC, y);
+                descDisp[fit] = saved;
+                int yd = y + LINE_H + (hexWrapped ? LINE_H : 0);
+                int barYd = yd - LINE_H/2;
+                tft.fillRect(0, barYd, 320, LINE_H, rowBg);
+                tft.drawString(descDisp + fit, X_HX + 4, yd);
+                drawY += LINE_H;
+            } else {
+                tft.drawString(descDisp, X_DESC, y);
+            }
         }
         drawY += LINE_H;
     }
@@ -1858,7 +1881,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;margin:0;
 .log-line{white-space:pre-wrap;font-size:.85em;line-height:1.5;padding:1px 0}
 .log-line.latest{background:#332200}
 .log-line.latest .log-desc{color:#fda;font-weight:bold}
-.log-cnt{display:inline-block;width:5%;color:#7a6a7a;vertical-align:top}
+.log-cnt{display:inline-block;width:4%;color:#7a6a7a;vertical-align:top}
 .log-ts{display:inline-block;width:8%;color:#6a8ba8;vertical-align:top}
 .log-hx{display:inline-block;width:52%;color:#6a8b6a;vertical-align:top;word-break:break-all}
 .log-desc{display:inline-block;color:#d9a040;vertical-align:top}
@@ -2115,15 +2138,18 @@ function logLine(msg,cnt,latest){
   if(p>=0&&l>p){
     let ts=esc(msg.slice(0,p)),hx=esc(msg.slice(p+1,l)),raw=msg.slice(l+1),isTx=raw.startsWith('> ');
     let desc=esc(isTx?raw.slice(2):raw);
-    return '<div class="log-line'+(latest?' latest':'')+'"><span class="log-cnt">x'+cnt+'</span><span class="log-ts">'+ts+'</span><span class="log-hx">'+hx+'</span><span class="log-'+(isTx?'desc-tx':'desc')+'">'+desc+'</span></div>';
+    return '<div class="log-line'+(latest?' latest':'')+'"><span class="log-cnt">' + String(cnt).padStart(3,'0') + '</span><span class="log-ts">'+ts+'</span><span class="log-hx">'+hx+'</span><span class="log-'+(isTx?'desc-tx':'desc')+'">'+desc+'</span></div>';
   }
-  return '<div class="log-line'+(latest?' latest':'')+'"><span class="log-cnt">x'+cnt+'</span><span class="log-ts">--</span><span class="log-hx">--</span><span class="log-desc">'+esc(msg)+'</span></div>';
+  return '<div class="log-line'+(latest?' latest':'')+'"><span class="log-cnt">' + String(cnt).padStart(3,'0') + '</span><span class="log-ts">--</span><span class="log-hx">--</span><span class="log-desc">'+esc(msg)+'</span></div>';
 }
 async function poll(){if(paused)return;let r=await fetch('/status');let d=await r.json();render(d)}
 setInterval(poll,1000);poll();
 document.getElementById('frames').onclick=function(){
   let t=[];
-  this.querySelectorAll('div').forEach(d=>t.push(d.textContent));
+  this.querySelectorAll('.log-line').forEach(d=>{
+    let s=d.querySelectorAll('span');
+    if(s.length>=4) t.push(s[0].textContent.padEnd(4)+s[1].textContent.padEnd(10)+s[2].textContent.padEnd(16)+s[3].textContent);
+  });
   let s=t.join('\r\n'), ta=document.createElement('textarea');
   ta.value=s; ta.style.position='fixed'; ta.style.left='-9999px';
   document.body.appendChild(ta); ta.select();
