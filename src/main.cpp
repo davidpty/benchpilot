@@ -1238,7 +1238,7 @@ static void drawLogView() {
         if (!scrollChanged) return;
     }
 
-    tft.setTextFont(4); tft.setTextDatum(ML_DATUM);
+    tft.setTextFont(2); tft.setTextDatum(ML_DATUM);
     char buf[MSG_TEXT_LEN];
     int drawY = TOP;
     int visIdx = -1;
