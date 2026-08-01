@@ -1308,13 +1308,18 @@ static void drawLogView() {
                     if (tft.textWidth(descDisp) <= descMax) { descDisp[fit] = tmp; break; }
                     descDisp[fit] = tmp; fit--;
                 }
+                int wordFit = fit;
+                while (wordFit > 0 && descDisp[wordFit - 1] != ' ') wordFit--;
+                if (wordFit > fit / 2) fit = wordFit;
                 char saved = descDisp[fit]; descDisp[fit] = 0;
                 tft.drawString(descDisp, X_DESC, y);
                 descDisp[fit] = saved;
+                char *rest = descDisp + fit;
+                while (*rest == ' ') rest++;
                 int yd = y + LINE_H + (hexWrapped ? LINE_H : 0);
                 int barYd = yd - LINE_H/2;
                 tft.fillRect(0, barYd, 320, LINE_H, rowBg);
-                tft.drawString(descDisp + fit, X_HX + 4, yd);
+                tft.drawString(rest, X_DESC, yd);
                 drawY += LINE_H;
             } else {
                 tft.drawString(descDisp, X_DESC, y);
@@ -2148,7 +2153,7 @@ document.getElementById('frames').onclick=function(){
   let t=[];
   this.querySelectorAll('.log-line').forEach(d=>{
     let s=d.querySelectorAll('span');
-    if(s.length>=4) t.push(s[0].textContent.padEnd(4)+s[1].textContent.padEnd(10)+s[2].textContent.padEnd(16)+s[3].textContent);
+    if(s.length>=4) t.push(s[0].textContent+'\t'+s[1].textContent+'\t'+s[2].textContent+'\t'+s[3].textContent);
   });
   let s=t.join('\r\n'), ta=document.createElement('textarea');
   ta.value=s; ta.style.position='fixed'; ta.style.left='-9999px';
