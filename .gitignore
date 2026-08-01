@@ -5,3 +5,4 @@ archive/
 __pycache__/
 *.pyc
 .vscode/
+src/wifi_config.h
