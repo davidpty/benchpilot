@@ -21,7 +21,6 @@
 #define SEATALK_BAUD        4800
 #define SEATALK_RX_PIN      35
 #define TFT_BL_PIN          27
-#define MSG_LOG_SIZE        300
 #define MSG_TEXT_LEN        128
 #define BUS_IDLE_MS         12
 #define AP_RECENT_MS        5000   // alarm recency window (ms since apUpdated)
@@ -283,20 +282,18 @@ struct BoatData {
 
     int tftRefresh = 0;
 
-    // Message log
-    char msgLog[MSG_LOG_SIZE][MSG_TEXT_LEN];
-    int msgLogWriteIdx = 0;
-    int msgLogCount = 0;
-
     void pushMsg(const char *text);
 };
 static BoatData g;
 
+// Log slot generation counter — bumped on every pushMsg so the CYD tick and web
+// update can detect new traffic without touching the ring.
+static uint32_t gSlotsSeq = 0;
+static void slotPush(const char *text);
+
 void BoatData::pushMsg(const char *text) {
-    strncpy(g.msgLog[g.msgLogWriteIdx], text, MSG_TEXT_LEN - 1);
-    g.msgLog[g.msgLogWriteIdx][MSG_TEXT_LEN - 1] = 0;
-    g.msgLogWriteIdx = (g.msgLogWriteIdx + 1) % MSG_LOG_SIZE;
-    if (g.msgLogCount < MSG_LOG_SIZE) g.msgLogCount++;
+    slotPush(text);
+    gSlotsSeq++;
 }
 
 static void buildLogLine(char *buf, size_t sz, unsigned long ts,
@@ -337,7 +334,7 @@ struct RdrState { int8_t val; bool valid; bool drawn; int8_t numW; };
 static RdrState gRdr = { 0, false, false, 0 };
 static bool gLogView = false;
 static int gLogScroll = 0;
-static int gLogLastWriteIdx = -1;
+static int gLogLastSeq = -1;
 static int gLogFrozenNewest = -1;
 static int gLogViewDir = 0;
 static int _flashIdx = -1;
@@ -346,8 +343,9 @@ static int _driftFlashIdx = -1;
 
 // Persistent log display slot cache
 #define MAX_SLOTS 50
-static struct Slot { char key[64]; int count; char text[MSG_TEXT_LEN]; bool seen; } gSlots[MAX_SLOTS];
+static struct Slot { char key[64]; int count; char text[MSG_TEXT_LEN]; } gSlots[MAX_SLOTS];
 static int gSlotCount = 0;
+static int gNewestSlot = -1;
 
 // Force full redraw of all bands after any fillScreen (WiFi change, OTA).
 static void invalidateBands() {
@@ -1154,11 +1152,32 @@ static void msgKey(const char *msg, char *key, int keyLen) {
     key[ki] = 0;
 }
 
+static void slotPush(const char *text) {
+    char key[64];
+    msgKey(text, key, 64);
+    int found = -1;
+    for (int i = 0; i < gSlotCount; i++) {
+        if (strcmp(gSlots[i].key, key) == 0) { found = i; break; }
+    }
+    if (found >= 0) {
+        gSlots[found].count++;
+        if (gSlots[found].count > 999) gSlots[found].count = 1;
+        strncpy(gSlots[found].text, text, MSG_TEXT_LEN - 1);
+        gSlots[found].text[MSG_TEXT_LEN - 1] = 0;
+        gNewestSlot = found;
+    } else if (gSlotCount < MAX_SLOTS) {
+        strcpy(gSlots[gSlotCount].key, key);
+        gSlots[gSlotCount].count = 1;
+        strncpy(gSlots[gSlotCount].text, text, MSG_TEXT_LEN - 1);
+        gSlots[gSlotCount].text[MSG_TEXT_LEN - 1] = 0;
+        gNewestSlot = gSlotCount;
+        gSlotCount++;
+    }
+}
+
 static void logViewScroll(int dir) {
     const int MAX_VISIBLE = (STATUS_BAND.y - 6) / 13;
-    int active = 0;
-    for (int i = 0; i < gSlotCount; i++)
-        if (gSlots[i].count > 0) active++;
+    int active = gSlotCount;
     if (active == 0) return;
     int maxScroll = max(0, active - MAX_VISIBLE);
     int step = max(1, MAX_VISIBLE / 3);
@@ -1179,63 +1198,18 @@ static void fitWidth(char *s, int maxW) {
 }
 
 static void drawLogView() {
-    int total = min(g.msgLogCount, (int)MSG_LOG_SIZE);
-
     const int LINE_H = 13;
     const int X_CNT = 5, X_TS = 40, X_HX = 80, X_DESC = 200;
     const int HX_MAX_W = X_DESC - X_HX - 4;
     const int TOP = 6;
     const int MAX_VISIBLE = (STATUS_BAND.y - TOP) / LINE_H;
 
-    // Update existing slots from ring buffer, add new ones
-    for (int i = 0; i < gSlotCount; i++) gSlots[i].seen = false;
-
-    int newestIdx = (g.msgLogWriteIdx - 1 + MSG_LOG_SIZE) % MSG_LOG_SIZE;
-    char curKey[64];
-    static int gNewestSlot = -1;
-    bool firstEncounter = true;
-
-    for (int i = 0; i < total; i++) {
-        int idx = (newestIdx - i + MSG_LOG_SIZE) % MSG_LOG_SIZE;
-        const char *msg = g.msgLog[idx];
-        msgKey(msg, curKey, 64);
-
-        int found = -1;
-        for (int j = 0; j < gSlotCount; j++) {
-            if (strcmp(gSlots[j].key, curKey) == 0) { found = j; break; }
-        }
-        if (found >= 0) {
-            if (!gSlots[found].seen) {
-                gSlots[found].count = 1;
-                gSlots[found].seen = true;
-                strncpy(gSlots[found].text, msg, MSG_TEXT_LEN - 1);
-                if (firstEncounter) { gNewestSlot = found; firstEncounter = false; }
-            } else {
-                gSlots[found].count++;
-                if (gSlots[found].count > 999) gSlots[found].count = 1;
-            }
-        } else if (gSlotCount < MAX_SLOTS) {
-            strcpy(gSlots[gSlotCount].key, curKey);
-            gSlots[gSlotCount].count = 1;
-            gSlots[gSlotCount].seen = true;
-            strncpy(gSlots[gSlotCount].text, msg, MSG_TEXT_LEN - 1);
-            if (firstEncounter) { gNewestSlot = gSlotCount; firstEncounter = false; }
-            gSlotCount++;
-        }
-    }
-
-    bool anyActive = false;
-    for (int i = 0; i < gSlotCount; i++)
-        if (gSlots[i].count > 0) { anyActive = true; break; }
-
-    if (!anyActive) {
+    if (gSlotCount == 0) {
         tft.fillRect(0, 0, 320, STATUS_BAND.y, TFT_BLACK);
         return;
     }
 
-    int active = 0;
-    for (int i = 0; i < gSlotCount; i++)
-        if (gSlots[i].count > 0) active++;
+    int active = gSlotCount;
     int maxScroll = max(0, active - MAX_VISIBLE);
     gLogScroll = constrain(gLogScroll, 0, maxScroll);
 
@@ -1243,9 +1217,9 @@ static void drawLogView() {
     bool scrollChanged = (gLogScroll != lastScroll);
     lastScroll = gLogScroll;
     if (gLogScroll == 0) {
-        if (!scrollChanged && g.msgLogWriteIdx == gLogLastWriteIdx) return;
-        if (g.msgLogWriteIdx != gLogLastWriteIdx) playTick();
-        gLogLastWriteIdx = g.msgLogWriteIdx;
+        if (!scrollChanged && gSlotsSeq == gLogLastSeq) return;
+        if (gSlotsSeq != gLogLastSeq) playTick();
+        gLogLastSeq = gSlotsSeq;
     } else {
         if (!scrollChanged) return;
     }
@@ -2033,7 +2007,7 @@ async function apCmd(cmd){
   beep();
   await fetch('/api/autopilot?cmd='+cmd);
 }
-let paused=false,pausedData=null,_lastHdg=180,_prevHdgPulse=-1,_newestKey='',gSlots=new Map();
+let paused=false,pausedData=null,_lastHdg=180,_prevHdgPulse=-1,_prevLatest='';
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function sensor(v,u,s){return v>=0?'<span class="s">'+s+' '+v+u+'</span>':''}
 function renderWidgets(d){
@@ -2126,30 +2100,15 @@ function render(d){
   if(d.gps_sats >= 0) s += '<span class="s">SATS: '+d.gps_sats+' HDOP '+d.gps_hdop+'</span>';
   if(d.gps_lat_deg >= 0) s += '<span class="s">GPS: '+d.gps_lat_deg+'\u00B0 '+(d.gps_lat_min/100).toFixed(2)+'\' '+(d.gps_lat_n?'N':'S')+' '+d.gps_lon_deg+'\u00B0 '+(d.gps_lon_min/100).toFixed(2)+'\' '+(d.gps_lon_e?'E':'W')+'</span>';
   document.getElementById('sensors').innerHTML=s;
-  // msgs — persistent slot dedup + static columns
-  let h='';
-  if(d.msgs&&d.msgs.length){
-    let seen=new Set(), newestKey='';
-    for(let m of d.msgs){
-      let p=m.lastIndexOf(','),body=p>=0?m.slice(p+1):m;
-      let k=body.replace(/[-\d]/g,'').replace(/\s+/g,' ').trim();
-      if(!seen.has(k)){
-        seen.add(k);
-        if(!newestKey) newestKey=k;
-        let s=gSlots.get(k);
-        if(s){s.c=1;s.t=m;}else gSlots.set(k,{c:1,t:m});
-      } else {
-        let s=gSlots.get(k); if(s){s.c++;if(s.c>999)s.c=1;}
-      }
-    }
-    for(let[k,s]of gSlots){
-      if(!s.c) continue;
-      h+=logLine(s.t,s.c,k===newestKey);
-    }
-    if(newestKey&&newestKey!==_newestKey){
-      _newestKey=newestKey;
-      try{let a=new AudioContext(),o=a.createOscillator(),g=a.createGain();o.type='square';o.frequency.value=1200;g.gain.setValueAtTime(0.07,a.currentTime);g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+0.015);o.connect(g).connect(a.destination);o.start();o.stop(a.currentTime+0.015);}catch(e){}
-    }
+  // msgs — render authoritative slots from /status
+  let h='', lt='';
+  if(d.slots) for(let sp of d.slots){
+    h += logLine(sp.t, sp.c, sp.l);
+    if(sp.l) lt = sp.t;
+  }
+  if(lt && lt!==_prevLatest){
+    _prevLatest=lt;
+    try{let a=new AudioContext(),o=a.createOscillator(),g=a.createGain();o.type='square';o.frequency.value=1200;g.gain.setValueAtTime(0.07,a.currentTime);g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+0.015);o.connect(g).connect(a.destination);o.start();o.stop(a.currentTime+0.015);}catch(e){}
   }
   let frames=document.getElementById('frames');
   let st=frames.scrollTop, sh=frames.scrollHeight;
@@ -2319,13 +2278,14 @@ static void handleStatus() {
         }
     }
     json += "],";
-    json += "\"msgs\":[";
-    int lines = min(g.msgLogCount, 200);
-    int newestIdx = (g.msgLogWriteIdx - 1 + MSG_LOG_SIZE) % MSG_LOG_SIZE;
-    for (int i = 0; i < lines; i++) {
+    json += "\"slots\":[";
+    for (int i = 0; i < gSlotCount; i++) {
         if (i > 0) json += ",";
-        int idx = (newestIdx - i + MSG_LOG_SIZE) % MSG_LOG_SIZE;
-        json += "\"" + String(g.msgLog[idx]) + "\"";
+        String t = gSlots[i].text;
+        t.replace("\\", "\\\\");
+        t.replace("\"", "\\\"");
+        json += "{\"c\":" + String(gSlots[i].count) + ",\"l\":"
+              + String(i == gNewestSlot ? "true" : "false") + ",\"t\":\"" + t + "\"}";
     }
     json += "]}";
     server.send(200, "application/json", json);
@@ -2699,7 +2659,7 @@ void loop() {
                 if (!handled && touchY < LOG_TAP_BOUNDARY) {
                     gLogView = true;
                     gLogScroll = 0;
-                    gLogLastWriteIdx = -1;
+                    gLogLastSeq = -1;
                     tft.fillScreen(TFT_BLACK);
                     lastBtnPress = now;
                 }

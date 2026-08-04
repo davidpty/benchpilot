@@ -1,0 +1,70 @@
+BenchPilot — Implemented Abilities
+===================================
+
+HARDWARE
+  1. Custom PCB design (Fritzing schematic + DIY etch PDF for home fabrication)
+  2. Bidirectional 12V SeaTalk ↔ 3.3V ESP32 level shifting via discrete BC557/BC547 transistors
+  3. 12V → 3.3V DC-DC step-down power supply
+  4. Speaker driver (LEDC PWM on GPIO 26)
+  5. SD card interface (SPI on GPIO 18/19/23/5) for datagram logging
+  6. Physical enclosure design (PVC foam board housing, documented with photo)
+
+SEATALK PROTOCOL
+  7. SeaTalk 1 RX — full datagram parser at 4800 baud with UART inversion + err_wr_mask
+  8. SeaTalk 1 TX — CSMA/CD implementation with collision detection, retry, echo suppression
+  9. Autopilot status (0x84): decode heading, mode, rudder, target, alarms, turn direction
+ 10. Compass heading + rudder (0x9C), steering compass (0x89), heading from wind (0x10)
+ 11. Depth (0x00), Apparent Wind Angle/Speed (0x10/0x11), Water Speed (0x20)
+ 12. SOG (0x52), COG (0x53), Water Temperature (0x23)
+ 13. GPS: Lat (0x50), Lon (0x51), Combined Position (0x58), Satellite Info (0x57)
+ 14. Autopilot failure codes (0x83), Device identification (0x90)
+ 15. Transmit autopilot commands (0x86): AUTO, STANDBY, WIND, TRACK, ±1°, ±10°
+ 16. Transmit compass heading (0x89) for bench simulation
+
+TFT TOUCHSCREEN (ILI9341 320×240)
+ 17. Flicker-free widget rendering with dirty-checking: mode, heading, rudder, alarms, target
+ 18. Rudder bar with tick marks, proportional colored fill, numeric value pill
+ 19. 13 touchscreen buttons with flash feedback and audio beeps
+ 20. Scrollable log view mode — deduplicated message count display, tap header to toggle
+ 21. Status bar: HELM/LOG mode, WiFi IP, uptime
+ 22. Custom bit-banged SoftSPI driver for XPT2046 touch controller (no external lib)
+ 23. Touch debouncing (300 ms)
+
+WIFI & WEB DASHBOARD
+ 24. WiFi AP+STA dual mode (home network + fallback AP)
+ 25. Full responsive web UI served from ESP32 (single-page HTML/CSS/JS)
+ 26. Real-time JSON status API: all sensors, GPS, alarms, display widgets, message log
+ 27. Button grid in web UI mirroring touchscreen layout
+ 28. Built-in FluxSim heading generator control via web
+ 29. DNS captive portal (all DNS queries redirected to ESP32)
+ 30. mDNS hostname support (benchpilot.local)
+ 31. PWA support: manifest.json, 192px/512px/SVG icons, apple-touch-icon
+ 32. SD log file browser with delete-all and download via web
+ 33. Web Audio API beeps + vibration API haptic feedback
+ 34. Click-to-copy log frames
+
+OTA UPDATES
+ 35. ArduinoOTA with progress bar on TFT, error display, hostname
+
+SD CARD LOGGING
+ 36. Automatic log file creation (LOG_0001.TXT) with timestamp + hex bytes + decoded description
+ 37. Auto-flush every 50 entries or 30 seconds
+ 38. Automatic old log cleanup when SD reaches 90% capacity
+
+FLUXSIM (BUILT-IN HEADING SIMULATOR)
+ 39. Generates fake heading datagrams (0x89) for bench testing without a compass
+ 40. Drift simulation: heading auto-changes based on rudder position in AUTO mode
+ 41. Manual heading adjust via touchscreen or web (±1°/±10°)
+ 42. Configurable TX interval (200ms–10s, default 250ms)
+
+AUDIO
+ 43. Startup melody (C-E-G), button beeps, new-message ticks
+ 44. Non-blocking playback via LEDC PWM
+
+DOCUMENTATION
+ 45. Complete SeaTalk protocol reference (physical layer, serial format, CSMA/CD, checksums)
+ 46. SeaTalk message dictionary (40+ message types)
+ 47. Autopilot command reference with mode transitions, timing constraints, safety notes
+ 48. ESP32 implementation guide with pin mapping, UART config, receive/transmit strategy
+ 49. Circuit schematic description and DIY etch instructions
+ 50. README with getting-started guide
