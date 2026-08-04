@@ -1166,6 +1166,18 @@ static void logViewScroll(int dir) {
     else gLogScroll = max(0, gLogScroll - step);
 }
 
+// Truncate s in place so its rendered width fits maxW; if anything was cut,
+// replace the last visible char with '+' as a truncation marker.
+static void fitWidth(char *s, int maxW) {
+    int f = (int)strlen(s);
+    while (f > 0) {
+        char tmp = s[f]; s[f] = 0;
+        if (tft.textWidth(s) <= maxW) { s[f] = tmp; break; }
+        s[f] = tmp; f--;
+    }
+    if (s[f]) { s[f - 1] = '+'; s[f] = 0; }
+}
+
 static void drawLogView() {
     int total = min(g.msgLogCount, (int)MSG_LOG_SIZE);
 
@@ -1287,14 +1299,17 @@ static void drawLogView() {
                 int y2 = y + LINE_H;
                 int barY2 = y2 - LINE_H/2;
                 tft.fillRect(0, barY2, 320, LINE_H, rowBg);
+                fitWidth(buf + fit, HX_MAX_W);
                 tft.drawString(buf + fit, X_HX, y2);
                 drawY += LINE_H;
                 hexWrapped = true;
             } else {
+                if (hxW > HX_MAX_W) fitWidth(buf, HX_MAX_W);
                 tft.drawString(buf, X_HX, y);
             }
 
             char *desc = c2 + 1;
+            while (*desc == ' ') desc++;   // skip format space from buildLogLine(", %s")
             bool isTx = (desc[0] == '>' && desc[1] == ' ');
             char *descDisp = isTx ? desc + 2 : desc;
             int descMax = 320 - X_DESC;
@@ -1302,7 +1317,7 @@ static void drawLogView() {
             uint16_t descColor = i == gNewestSlot ? (isTx ? TFT_LOG_HI_TX : TFT_LOG_HI)
                                                   : (isTx ? TFT_LOG_DESC_TX : TFT_LOG_DESC);
             tft.setTextColor(descColor);
-            if (descW > descMax) {
+            if (descW > descMax && (hexWrapped || drawY + LINE_H * 2 <= STATUS_BAND.y)) {
                 int fit = (int)strlen(descDisp);
                 while (fit > 0) {
                     char tmp = descDisp[fit]; descDisp[fit] = 0;
@@ -1321,7 +1336,7 @@ static void drawLogView() {
                     int barYd = yd - LINE_H/2;
                     tft.fillRect(0, barYd, 320, LINE_H, rowBg);
                 }
-                snprintf(buf, sizeof(buf), " %s", rest);
+                snprintf(buf, sizeof(buf), "%s", rest);
                 tft.drawString(buf, X_DESC, yd);
                 if (!hexWrapped) drawY += LINE_H;
             } else {
